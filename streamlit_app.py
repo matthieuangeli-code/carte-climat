@@ -16,7 +16,7 @@ from streamlit_folium import st_folium
 
 from city_catalog_generated import COUNTRY_NAMES
 
-st.set_page_config(page_title="Carte climat — France & voisins", page_icon="☀️", layout="wide")
+st.set_page_config(page_title="Carte climat — Europe", page_icon="☀️", layout="wide")
 
 DATA_PATH = Path("data/climate_10y.csv")
 META_PATH = Path("data/climate_metadata.json")
@@ -28,10 +28,10 @@ METRICS = {
     "Indice climatique global": "climate_score",
 }
 
-# L'indice privilégie volontairement la lumière, puis le confort thermique.
 SUN_WEIGHT = 0.50
 TMIN_WEIGHT = 0.25
 TMAX_WEIGHT = 0.25
+NORDIC_COUNTRIES = {"NO", "SE", "DK"}
 
 
 def metric_format(value: float, metric: str) -> str:
@@ -50,12 +50,10 @@ def radius_for(value: float, vmin: float, vmax: float) -> float:
     if vmax <= vmin:
         return 7.0
     t = max(0.0, min(1.0, (value - vmin) / (vmax - vmin)))
-    # Points un peu plus petits qu'avant : le nouveau maillage est bien plus dense.
     return 3.8 + 6.2 * math.sqrt(t)
 
 
 def comfort_score(value: float, zero_low: float, ideal_low: float, ideal_high: float, zero_high: float) -> float:
-    """Score trapézoïdal 0–100 : zone idéale plate, pénalité aux extrêmes."""
     if pd.isna(value):
         return float("nan")
     x = float(value)
@@ -69,12 +67,7 @@ def comfort_score(value: float, zero_low: float, ideal_low: float, ideal_high: f
 
 
 def add_climate_score(df: pd.DataFrame) -> pd.DataFrame:
-    """Ajoute un indice mensuel 0–100 combinant les trois indicateurs.
-
-    Soleil : 20 jours/mois avec >5 h = score maximum.
-    Tmin : zone idéale 8–18 °C, pénalité jusqu'à -8 / 28 °C.
-    Tmax : zone idéale 18–27 °C, pénalité jusqu'à 4 / 39 °C.
-    """
+    """Indice mensuel 0–100 : 50 % soleil, 25 % Tmin, 25 % Tmax."""
     out = df.copy()
     sun = pd.to_numeric(out["sun_days_gt5h"], errors="coerce")
     tmin = pd.to_numeric(out["tmin"], errors="coerce")
@@ -124,7 +117,18 @@ month_name = st.sidebar.selectbox("Mois", MONTHS, index=0)
 month = MONTHS.index(month_name) + 1
 metric_label = st.sidebar.selectbox("Indicateur", list(METRICS), index=0)
 metric = METRICS[metric_label]
-scope = st.sidebar.selectbox("Zone", ["France + réseau 1000 km + Oslo", "France seulement", "Hors France seulement"])
+scope = st.sidebar.selectbox(
+    "Zone",
+    [
+        "France + Europe proche + Nordiques",
+        "France seulement",
+        "Europe proche hors France",
+        "Scandinavie — NO + SE + DK",
+        "Norvège seulement",
+        "Suède seulement",
+        "Danemark seulement",
+    ],
+)
 show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 
 st.sidebar.divider()
@@ -139,12 +143,20 @@ if metric == "climate_score":
 rows = climate[climate["month"] == month].copy()
 if scope == "France seulement":
     rows = rows[rows["country"] == "FR"]
-elif scope == "Hors France seulement":
-    rows = rows[rows["country"] != "FR"]
+elif scope == "Europe proche hors France":
+    rows = rows[(rows["country"] != "FR") & (~rows["country"].isin(NORDIC_COUNTRIES))]
+elif scope == "Scandinavie — NO + SE + DK":
+    rows = rows[rows["country"].isin(NORDIC_COUNTRIES)]
+elif scope == "Norvège seulement":
+    rows = rows[rows["country"] == "NO"]
+elif scope == "Suède seulement":
+    rows = rows[rows["country"] == "SE"]
+elif scope == "Danemark seulement":
+    rows = rows[rows["country"] == "DK"]
 
 rows = rows[rows[metric].notna()].copy()
 if rows.empty:
-    st.error("Aucune donnée exploitable pour cet indicateur et ce mois.")
+    st.error("Aucune donnée exploitable pour cet indicateur et ce mois dans cette zone.")
     st.stop()
 
 values = rows[metric].astype(float)
@@ -152,9 +164,9 @@ vmin, vmax = float(values.min()), float(values.max())
 ranked = rows.sort_values(metric, ascending=False).copy()
 cmap = build_colormap(metric, vmin, vmax, f"{metric_label} — {month_name}")
 
-st.title("Carte climat — France & Europe proche")
+st.title("Carte climat — France, Europe proche & pays nordiques")
 st.caption(
-    f"Climat récent {start_year}–{end_year} · réseau dense jusqu'à ~1000 km du pourtour français · OpenStreetMap interactif."
+    f"Climat récent {start_year}–{end_year} · réseau dense autour de la France + Norvège/Suède/Danemark · OpenStreetMap interactif."
 )
 
 cols = st.columns(4)
@@ -164,12 +176,9 @@ for col, ref_name in zip(cols[1:], ["Biot", "Embrun", "Oslo"]):
     ref = rows[rows["name"] == ref_name]
     col.metric(ref_name, metric_format(float(ref.iloc[0][metric]), metric) if not ref.empty else "—")
 
-if scope == "France seulement":
-    map_center, zoom = [46.4, 2.5], 5
-else:
-    map_center, zoom = [47.0, 4.0], 4
-
-m = folium.Map(location=map_center, zoom_start=zoom, tiles=None, control_scale=True, prefer_canvas=True)
+# Centre initial puis cadrage automatique sur les points visibles.
+map_center = [float(rows["lat"].mean()), float(rows["lon"].mean())]
+m = folium.Map(location=map_center, zoom_start=4, tiles=None, control_scale=True, prefer_canvas=True)
 folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=True).add_to(m)
 folium.TileLayer("CartoDB positron", name="Carte claire", show=False).add_to(m)
 Fullscreen(position="topright", title="Plein écran", title_cancel="Quitter le plein écran").add_to(m)
@@ -211,6 +220,14 @@ for _, r in rows.iterrows():
                 html=f"<div style='font-size:9px;font-weight:700;color:#263238;text-shadow:0 0 3px white,0 0 3px white'>{r['name']}</div>"
             ),
         ).add_to(m)
+
+# Folium ajuste le zoom à la sélection : France seule, Scandinavie, Norvège, etc.
+if len(rows) > 1:
+    m.fit_bounds(
+        [[float(rows["lat"].min()), float(rows["lon"].min())],
+         [float(rows["lat"].max()), float(rows["lon"].max())]],
+        padding=(24, 24),
+    )
 
 cmap.add_to(m)
 folium.LayerControl(collapsed=True).add_to(m)
