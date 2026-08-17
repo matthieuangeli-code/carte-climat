@@ -1,0 +1,13 @@
+{
+  "generated_at_utc": "2026-08-17T23:21:33.415517+00:00",
+  "start_year": 2016,
+  "end_year": 2025,
+  "source": "Meteostat daily + daily_derived",
+  "request_chunks_years": 2,
+  "station_limit": 2,
+  "cities_catalog": 118,
+  "cities_with_data": 118,
+  "rows": 1416,
+  "failures": {},
+  "definition_sunny_day": "tsun > 300 minutes"
+}
