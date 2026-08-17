@@ -1,25 +1,49 @@
 # Carte Climat
 
-Application Streamlit interactive pour comparer le climat en France et dans les pays voisins sur une carte OpenStreetMap zoomable.
+Application Streamlit interactive pour comparer le climat récent sur une carte OpenStreetMap zoomable.
 
-## Version Streamlit recommandée
+## Données et zone couverte
 
-La carte contient maintenant **118 villes** : 79 en France, un maillage de la Belgique, du Luxembourg, de l'Allemagne du Sud/Ouest, de la Suisse, de l'Italie du Nord, de l'Espagne du Nord, Andorre et Monaco, plus Oslo comme référence.
+Les données météo sont **pré-calculées** sur les 10 dernières années complètes puis stockées dans `data/climate_10y.csv`. L'application Streamlit ne télécharge donc aucune donnée météo au démarrage.
 
-Les données sont calculées sur **tous les mois de l'année** avec trois indicateurs :
+Le catalogue est généré automatiquement à partir de GeoNames :
 
-- **température minimale moyenne** du mois ;
-- **température maximale moyenne** du mois ;
-- **nombre moyen de jours par mois avec plus de 5 h de soleil effectif**.
+- réseau dense de villes en France métropolitaine ;
+- villes européennes jusqu'à environ **1000 km du pourtour français** ;
+- sélection spatiale pour éviter des milliers de points redondants ;
+- grandes villes conservées même dans les zones denses ;
+- quelques petites villes prioritaires (Biot, Embrun, Valbonne, Mende, etc.) ;
+- Oslo conservé comme référence hors rayon.
 
-Toutes les valeurs Streamlit utilisent la même méthode : données quotidiennes ERA5-Land via l'API historique Open-Meteo sur la période **1991–2020**. Le premier chargement récupère les normales par lots ; Streamlit les met ensuite en cache sur disque.
+Le nombre exact de villes dépend du catalogue GeoNames utilisé lors du dernier pré-calcul et est affiché dans la sidebar de l'app.
 
-### Lancer sous Windows
+## Indicateurs mensuels
+
+Les 12 mois de l'année sont disponibles avec quatre indicateurs :
+
+1. **jours avec >5 h de soleil** ;
+2. **température minimale moyenne** ;
+3. **température maximale moyenne** ;
+4. **indice climatique global /100**.
+
+### Indice climatique global
+
+L'indice est volontairement pratique plutôt que scientifique :
+
+- **50 %** ensoleillement ;
+- **25 %** confort des Tmin ;
+- **25 %** confort des Tmax.
+
+Le soleil atteint son score maximum à 20 jours/mois avec plus de 5 h. La zone de confort des Tmin est 8–18 °C et celle des Tmax 18–27 °C. Les températures très froides comme les chaleurs excessives sont pénalisées : « plus chaud » n'est donc pas automatiquement « mieux ».
+
+Meteostat n'offre pas `tsun` avec la même couverture partout. Les trous résiduels d'ensoleillement peuvent être complétés lors du pré-calcul par interpolation spatiale à partir des villes voisines ; ces valeurs sont signalées dans les popups.
+
+## Lancer sous Windows
 
 Si le dépôt est déjà cloné :
 
 ```powershell
-git pull
+git pull --ff-only
 .\lancer_streamlit.bat
 ```
 
@@ -31,22 +55,28 @@ cd carte-climat
 .\lancer_streamlit.bat
 ```
 
-Le lanceur vérifie les dépendances, les installe si nécessaire, puis ouvre l'application Streamlit dans le navigateur.
+Le lanceur se met à jour depuis GitHub puis ouvre Streamlit. Si le CSV pré-calculé est présent, l'ouverture est immédiate.
 
-## Carte
+## Pré-calcul
 
-- fond OpenStreetMap ;
-- zoom à la molette et déplacement libre ;
-- plein écran ;
-- popups par ville avec les trois indicateurs du mois ;
-- filtre France / pays voisins ;
-- affichage optionnel des noms ;
-- classement dynamique sous la carte.
+`precompute_climate.py` récupère les séries Meteostat sur les 10 dernières années complètes, en blocs de 2 ans pour respecter les limites du provider `daily_derived`.
+
+Le workflow `.github/workflows/build-climate-data.yml` exécute ce calcul sur GitHub Actions et commit automatiquement :
+
+- `data/climate_10y.csv`
+- `data/climate_metadata.json`
+
+Il est aussi possible de lancer manuellement :
+
+```powershell
+py -3 precompute_climate.py
+```
 
 ## Fichiers principaux
 
-- `streamlit_app.py` : application navigateur ;
-- `city_catalog.py` : catalogue dense des villes ;
-- `requirements.txt` : dépendances ;
+- `streamlit_app.py` : carte et interface navigateur ;
+- `city_catalog_generated.py` : génération du réseau de villes ;
+- `precompute_climate.py` : pré-calcul 10 ans ;
+- `data/climate_10y.csv` : données déjà agrégées ;
 - `lancer_streamlit.bat` : lanceur Windows ;
 - `carte_climat.py` / `climate_data.py` : ancienne version desktop Tkinter, conservée dans le dépôt.
