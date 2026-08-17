@@ -231,7 +231,7 @@ if len(rows) > 1:
 
 cmap.add_to(m)
 folium.LayerControl(collapsed=True).add_to(m)
-st_folium(m, use_container_width=True, height=740, returned_objects=[], key=f"climate-{month}-{metric}-{scope}-{show_labels}")
+st_folium(m, width=None, height=740, returned_objects=[], key=f"climate-{month}-{metric}-{scope}-{show_labels}")
 
 st.subheader(f"Classement — {metric_label.lower()} en {month_name.lower()}")
 rank_df = pd.DataFrame({
@@ -243,7 +243,7 @@ rank_df = pd.DataFrame({
     "Tmin moyenne (°C)": ranked["tmin"].round(1).values,
     "Tmax moyenne (°C)": ranked["tmax"].round(1).values,
 })
-st.dataframe(rank_df, hide_index=True, use_container_width=True, height=min(760, 42 + len(rank_df) * 35))
+st.dataframe(rank_df, hide_index=True, width="stretch", height=min(760, 42 + len(rank_df) * 35))
 
 st.caption(
     "Indice global mensuel : 50 % ensoleillement, 25 % Tmin, 25 % Tmax. "
