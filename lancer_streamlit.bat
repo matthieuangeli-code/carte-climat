@@ -15,14 +15,13 @@ if not exist "data\climate_10y.csv" (
   echo.
   echo ================================================
   echo Premier lancement : preparation des donnees climat
-  echo 2016-2025 avant ouverture du navigateur.
-  echo Cela ne sera fait qu'une seule fois sur ce PC.
+  echo avant ouverture du navigateur.
   echo ================================================
   echo.
-  py -3 -c "import pandas, meteostat" >nul 2>&1
+  py -3 -c "import pandas, meteostat, geonamescache" >nul 2>&1
   if errorlevel 1 (
     echo Installation des dependances de calcul...
-    py -3 -m pip install --upgrade pandas "meteostat>=2.1.4"
+    py -3 -m pip install --upgrade pandas "meteostat>=2.1.4" "geonamescache>=2.0.0"
     if errorlevel 1 goto :error
   )
   py -3 precompute_climate.py
