@@ -3,3 +3,4 @@ folium
 streamlit-folium
 pandas
 meteostat>=2.1.4
+geonamescache>=2.0.0
