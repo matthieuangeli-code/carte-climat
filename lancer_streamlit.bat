@@ -2,9 +2,9 @@
 cd /d "%~dp0"
 
 echo Verification des dependances Streamlit...
-py -3 -c "import streamlit, folium, streamlit_folium, pandas" >nul 2>&1
+py -3 -c "import streamlit, folium, streamlit_folium, pandas, meteostat" >nul 2>&1
 if errorlevel 1 (
-  echo Installation des dependances...
+  echo Installation ou mise a jour des dependances...
   py -3 -m pip install -r requirements.txt
   if errorlevel 1 goto :error
 )
