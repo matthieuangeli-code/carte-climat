@@ -7,6 +7,7 @@ on:
     paths:
       - "precompute_climate.py"
       - "city_catalog.py"
+      - "city_catalog_generated.py"
       - ".github/workflows/build-climate-data.yml"
   schedule:
     - cron: "20 4 10 1 *"
@@ -17,7 +18,7 @@ permissions:
 jobs:
   build-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +30,7 @@ jobs:
           cache: pip
 
       - name: Install data dependencies
-        run: python -m pip install --upgrade pandas "meteostat>=2.1.4"
+        run: python -m pip install --upgrade pandas "meteostat>=2.1.4" "geonamescache>=2.0.0"
 
       - name: Precompute 10-year climate data
         run: python precompute_climate.py
