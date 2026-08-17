@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
 """Carte climat interactive — Streamlit + Folium/OpenStreetMap.
 
-Les normales sont calculées de manière homogène à partir de la réanalyse
-ERA5-Land via l'API historique Open-Meteo, sur la période 1991-2020.
+Pour rester compatible avec le quota gratuit Open-Meteo, l'application
+n'essaye pas de télécharger 30 années quotidiennes pour plus de 100 villes.
+Elle construit à la place un échantillon climatologique ERA5-Land réparti
+sur le mois et sur 8 années entre 1992 et 2020.
 """
 
 from __future__ import annotations
 
+import calendar
 import json
 import math
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -36,8 +41,10 @@ METRICS = {
     "Température minimale moyenne": "tmin",
     "Température maximale moyenne": "tmax",
 }
-BATCH_SIZE = 8
-YEARS = range(1991, 2021)
+
+SAMPLE_YEARS = [1992, 1996, 2000, 2004, 2008, 2012, 2016, 2020]
+SAMPLE_START_DAYS = [2, 6, 10, 14, 18, 22, 25, 28]
+CATALOG_VERSION = "dense-118-v2"
 
 
 def metric_format(value: float, metric: str) -> str:
@@ -59,127 +66,147 @@ def build_colormap(metric: str, vmin: float, vmax: float, caption: str) -> Linea
     return LinearColormap(colors=colors, vmin=vmin, vmax=vmax, caption=caption)
 
 
-def catalog_for_scope(scope: str) -> list[dict]:
+def filter_scope(rows: list[dict], scope: str) -> list[dict]:
     if scope == "France seulement":
-        return [c for c in CITIES if c["country"] == "FR"]
+        return [r for r in rows if r["country"] == "FR"]
     if scope == "Pays voisins seulement":
-        return [c for c in CITIES if c["country"] not in {"FR", "NO"}]
-    return CITIES
+        return [r for r in rows if r["country"] not in {"FR", "NO"}]
+    return rows
 
 
-def chunked(items: list[dict], size: int) -> list[list[dict]]:
-    return [items[i : i + size] for i in range(0, len(items), size)]
+def _open_json_with_retry(url: str, attempts: int = 4) -> object:
+    delays = [5, 12, 25, 45]
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "carte-climat-streamlit/2.0"},
+    )
 
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            retryable = exc.code == 429 or 500 <= exc.code < 600
+            if not retryable or attempt == attempts - 1:
+                raise
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            try:
+                delay = max(delays[attempt], float(retry_after)) if retry_after else delays[attempt]
+            except (TypeError, ValueError):
+                delay = delays[attempt]
+            time.sleep(delay)
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delays[attempt])
 
-def _aggregate_climate(city: dict, daily: dict) -> dict:
-    """Transforme 30 ans de données quotidiennes en normales mensuelles."""
-    tmin_sum = [0.0] * 12
-    tmin_n = [0] * 12
-    tmax_sum = [0.0] * 12
-    tmax_n = [0] * 12
-    sunny_counts = {month: {year: 0 for year in YEARS} for month in range(1, 13)}
-
-    times = daily.get("time", [])
-    tmins = daily.get("temperature_2m_min", [])
-    tmaxs = daily.get("temperature_2m_max", [])
-    sunshine = daily.get("sunshine_duration", [])
-
-    for date_s, tmin, tmax, seconds in zip(times, tmins, tmaxs, sunshine):
-        year, month, _day = map(int, date_s.split("-"))
-        idx = month - 1
-
-        if tmin is not None:
-            tmin_sum[idx] += float(tmin)
-            tmin_n[idx] += 1
-        if tmax is not None:
-            tmax_sum[idx] += float(tmax)
-            tmax_n[idx] += 1
-        if seconds is not None and float(seconds) > 18_000:
-            sunny_counts[month][year] += 1
-
-    return {
-        "name": city["name"],
-        "country": city["country"],
-        "lat": city["lat"],
-        "lon": city["lon"],
-        "tmin": [tmin_sum[i] / tmin_n[i] if tmin_n[i] else None for i in range(12)],
-        "tmax": [tmax_sum[i] / tmax_n[i] if tmax_n[i] else None for i in range(12)],
-        "sun_days_gt5h": [
-            sum(sunny_counts[month].values()) / len(sunny_counts[month])
-            for month in range(1, 13)
-        ],
-    }
+    raise RuntimeError("Téléchargement Open-Meteo impossible.")
 
 
 @st.cache_data(show_spinner=False, persist="disk")
-def fetch_batch(batch_signature: tuple[tuple[str, str, float, float], ...]) -> list[dict]:
-    """Télécharge et agrège un lot de villes. Le résultat est persisté sur disque."""
-    batch = [
-        {"name": name, "country": country, "lat": lat, "lon": lon}
-        for name, country, lat, lon in batch_signature
-    ]
+def fetch_sample_window(
+    month: int,
+    year: int,
+    start_day: int,
+    _catalog_version: str,
+) -> list[dict]:
+    last_day = calendar.monthrange(year, month)[1]
+    start_day = min(start_day, last_day)
+    end_day = min(start_day + 2, last_day)
+
     params = {
-        "latitude": ",".join(str(c["lat"]) for c in batch),
-        "longitude": ",".join(str(c["lon"]) for c in batch),
-        "start_date": "1991-01-01",
-        "end_date": "2020-12-31",
+        "latitude": ",".join(str(c["lat"]) for c in CITIES),
+        "longitude": ",".join(str(c["lon"]) for c in CITIES),
+        "start_date": f"{year:04d}-{month:02d}-{start_day:02d}",
+        "end_date": f"{year:04d}-{month:02d}-{end_day:02d}",
         "daily": "temperature_2m_min,temperature_2m_max,sunshine_duration",
         "timezone": "auto",
         "models": "era5_land",
     }
     url = "https://archive-api.open-meteo.com/v1/archive?" + urllib.parse.urlencode(params)
-
-    with urllib.request.urlopen(url, timeout=180) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-
+    payload = _open_json_with_retry(url)
     payloads = payload if isinstance(payload, list) else [payload]
-    if len(payloads) != len(batch):
-        raise RuntimeError("Réponse Open-Meteo inattendue pour un lot de villes.")
 
-    return [
-        _aggregate_climate(city, item["daily"])
-        for city, item in zip(batch, payloads)
-    ]
+    if len(payloads) != len(CITIES):
+        raise RuntimeError(
+            f"Open-Meteo a renvoyé {len(payloads)} lieux pour {len(CITIES)} demandés."
+        )
 
-
-def load_normals(catalog: list[dict]) -> list[dict]:
-    batches = chunked(catalog, BATCH_SIZE)
-    progress = st.progress(0, text="Chargement des normales climatiques 1991–2020…")
     rows: list[dict] = []
-
-    for index, batch in enumerate(batches, start=1):
-        signature = tuple(
-            (c["name"], c["country"], float(c["lat"]), float(c["lon"]))
-            for c in batch
+    for city, item in zip(CITIES, payloads):
+        daily = item.get("daily", {})
+        tmins = [float(v) for v in daily.get("temperature_2m_min", []) if v is not None]
+        tmaxs = [float(v) for v in daily.get("temperature_2m_max", []) if v is not None]
+        sunshine = [float(v) for v in daily.get("sunshine_duration", []) if v is not None]
+        rows.append(
+            {
+                "name": city["name"],
+                "country": city["country"],
+                "lat": city["lat"],
+                "lon": city["lon"],
+                "tmin_sum": sum(tmins),
+                "tmin_n": len(tmins),
+                "tmax_sum": sum(tmaxs),
+                "tmax_n": len(tmaxs),
+                "sunny_n": sum(1 for seconds in sunshine if seconds > 18_000),
+                "sun_n": len(sunshine),
+            }
         )
-        rows.extend(fetch_batch(signature))
-        progress.progress(
-            index / len(batches),
-            text=f"Normales climatiques : lot {index}/{len(batches)}",
-        )
-
-    progress.empty()
     return rows
 
 
-def rows_for_month(normals: list[dict], month_idx: int) -> list[dict]:
-    return [
-        {
-            "name": city["name"],
-            "country": city["country"],
-            "lat": city["lat"],
-            "lon": city["lon"],
-            "tmin": float(city["tmin"][month_idx]),
-            "tmax": float(city["tmax"][month_idx]),
-            "sun_days_gt5h": float(city["sun_days_gt5h"][month_idx]),
+@st.cache_data(show_spinner=False, persist="disk")
+def load_month_climate(month_idx: int, _catalog_version: str) -> list[dict]:
+    month = month_idx + 1
+    accum = {
+        c["name"]: {
+            "name": c["name"], "country": c["country"],
+            "lat": c["lat"], "lon": c["lon"],
+            "tmin_sum": 0.0, "tmin_n": 0,
+            "tmax_sum": 0.0, "tmax_n": 0,
+            "sunny_n": 0, "sun_n": 0,
         }
-        for city in normals
-    ]
+        for c in CITIES
+    }
+
+    progress = st.progress(0, text=f"Chargement climatologique — {MONTHS[month_idx]}…")
+    total = len(SAMPLE_YEARS)
+
+    for i, (year, start_day) in enumerate(zip(SAMPLE_YEARS, SAMPLE_START_DAYS), start=1):
+        window_rows = fetch_sample_window(month, year, start_day, CATALOG_VERSION)
+        for row in window_rows:
+            a = accum[row["name"]]
+            for key in ("tmin_sum", "tmin_n", "tmax_sum", "tmax_n", "sunny_n", "sun_n"):
+                a[key] += row[key]
+        progress.progress(i / total, text=f"Climat {MONTHS[month_idx]} : échantillon {i}/{total}")
+        if i < total:
+            time.sleep(0.35)
+
+    progress.empty()
+    days_in_month = calendar.monthrange(2019, month)[1]
+    result: list[dict] = []
+
+    for city in CITIES:
+        a = accum[city["name"]]
+        if not a["tmin_n"] or not a["tmax_n"] or not a["sun_n"]:
+            continue
+        result.append(
+            {
+                "name": a["name"],
+                "country": a["country"],
+                "lat": a["lat"],
+                "lon": a["lon"],
+                "tmin": a["tmin_sum"] / a["tmin_n"],
+                "tmax": a["tmax_sum"] / a["tmax_n"],
+                "sun_days_gt5h": (a["sunny_n"] / a["sun_n"]) * days_in_month,
+            }
+        )
+    return result
 
 
 st.sidebar.title("☀️ Carte climat")
 st.sidebar.caption(
-    "Normales homogènes 1991–2020. Températures et soleil sont calculés depuis la même réanalyse ERA5-Land."
+    "Comparaison ERA5-Land. Le calcul léger échantillonne plusieurs années et plusieurs moments du mois pour éviter les quotas de l'API publique."
 )
 
 month_name = st.sidebar.selectbox("Mois", MONTHS, index=0)
@@ -194,24 +221,35 @@ show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 
 st.sidebar.divider()
 st.sidebar.caption(
-    f"{len(CITIES)} villes au catalogue. Le premier chargement télécharge les normales ; les suivants réutilisent le cache local."
+    f"{len(CITIES)} villes. Une fois un mois chargé, changer d'indicateur ou de zone ne refait aucun appel réseau."
 )
-if st.sidebar.button("Vider le cache climat et recalculer"):
-    fetch_batch.clear()
+if st.sidebar.button("Vider le cache climat"):
+    fetch_sample_window.clear()
+    load_month_climate.clear()
     st.rerun()
 
-catalog = catalog_for_scope(scope)
-
 try:
-    normals = load_normals(catalog)
+    all_rows = load_month_climate(month_idx, CATALOG_VERSION)
+except urllib.error.HTTPError as exc:
+    if exc.code == 429:
+        st.error(
+            "Open-Meteo limite encore temporairement les requêtes (HTTP 429). "
+            "Attends une minute puis recharge : les échantillons déjà reçus restent en cache."
+        )
+    else:
+        st.error(f"Erreur Open-Meteo HTTP {exc.code}.")
+    st.exception(exc)
+    st.stop()
 except Exception as exc:
-    st.error(
-        "Impossible de charger les normales Open-Meteo. Vérifie la connexion Internet puis recharge la page."
-    )
+    st.error("Impossible de charger les données climatiques. Recharge la page dans quelques instants.")
     st.exception(exc)
     st.stop()
 
-rows = rows_for_month(normals, month_idx)
+rows = filter_scope(all_rows, scope)
+if not rows:
+    st.error("Aucune ville disponible dans cette sélection.")
+    st.stop()
+
 values = [r[metric] for r in rows]
 vmin, vmax = min(values), max(values)
 ranked = sorted(rows, key=lambda r: r[metric], reverse=True)
@@ -225,18 +263,8 @@ st.caption(
 cols = st.columns(4)
 cols[0].metric("🥇 Meilleur", f"{ranked[0]['name']} — {metric_format(ranked[0][metric], metric)}")
 for col, ref_name in zip(cols[1:], ["Biot", "Embrun", "Oslo"]):
-    ref = next((r for r in rows if r["name"] == ref_name), None)
-    if ref is not None:
-        col.metric(ref_name, metric_format(ref[metric], metric))
-    else:
-        ref_catalog = [c for c in CITIES if c["name"] == ref_name]
-        if ref_catalog:
-            try:
-                ref_normals = load_normals(ref_catalog)
-                ref_row = rows_for_month(ref_normals, month_idx)[0]
-                col.metric(ref_name, metric_format(ref_row[metric], metric))
-            except Exception:
-                col.metric(ref_name, "—")
+    ref = next((r for r in all_rows if r["name"] == ref_name), None)
+    col.metric(ref_name, metric_format(ref[metric], metric) if ref else "—")
 
 if scope == "Pays voisins seulement":
     map_center, zoom = [46.4, 5.0], 5
@@ -325,6 +353,8 @@ st.dataframe(
 )
 
 st.caption(
-    "Période 1991–2020. Tmin = moyenne des minima quotidiens du mois ; Tmax = moyenne des maxima quotidiens. "
-    "Un jour solaire est compté lorsque sunshine_duration est strictement supérieure à 5 h."
+    "Méthode légère : ERA5-Land via Open-Meteo, 24 jours échantillonnés par mois et par ville, "
+    "répartis sur 8 années entre 1992 et 2020. Tmin/Tmax sont les moyennes de cet échantillon ; "
+    "les jours >5 h sont la fréquence observée ramenée au nombre de jours du mois. "
+    "Ce mode privilégie la comparaison géographique et évite le quota 429 de l'API gratuite."
 )
