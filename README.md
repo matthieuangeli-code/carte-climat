@@ -1,78 +1,52 @@
 # Carte Climat
 
-Application Python pour comparer le climat de villes françaises et voisines, avec deux interfaces :
+Application Streamlit interactive pour comparer le climat en France et dans les pays voisins sur une carte OpenStreetMap zoomable.
 
-- **Streamlit + OpenStreetMap** : version recommandée, dans le navigateur, avec zoom/pan et popups ;
-- **Tkinter** : version desktop légère et hors ligne.
+## Version Streamlit recommandée
 
-## Indicateurs
+La carte contient maintenant **118 villes** : 79 en France, un maillage de la Belgique, du Luxembourg, de l'Allemagne du Sud/Ouest, de la Suisse, de l'Italie du Nord, de l'Espagne du Nord, Andorre et Monaco, plus Oslo comme référence.
 
-- température minimale moyenne par mois ;
-- température maximale moyenne par mois ;
-- nombre moyen de jours avec **au moins 5 h de soleil effectif** ;
-- classement dynamique des villes.
+Les données sont calculées sur **tous les mois de l'année** avec trois indicateurs :
 
-La sélection comprend notamment Biot, Embrun, Marseille, Montpellier, Toulouse, Annecy, Chambéry, La Rochelle, Paris, Oslo, Genève, Barcelone, Milan et plusieurs autres villes.
+- **température minimale moyenne** du mois ;
+- **température maximale moyenne** du mois ;
+- **nombre moyen de jours par mois avec plus de 5 h de soleil effectif**.
 
-## Version Streamlit — recommandée
+Toutes les valeurs Streamlit utilisent la même méthode : données quotidiennes ERA5-Land via l'API historique Open-Meteo sur la période **1991–2020**. Le premier chargement récupère les normales par lots ; Streamlit les met ensuite en cache sur disque.
 
-### Windows : le plus simple
+### Lancer sous Windows
 
-Double-cliquer sur :
-
-```text
-lancer_streamlit.bat
-```
-
-Le script installe les dépendances si nécessaire, démarre Streamlit et ouvre automatiquement l'application dans le navigateur.
-
-### En ligne de commande
+Si le dépôt est déjà cloné :
 
 ```powershell
-py -3 -m pip install -r requirements.txt
-py -3 -m streamlit run streamlit_app.py
+git pull
+.\lancer_streamlit.bat
 ```
 
-Puis ouvrir, si nécessaire :
-
-```text
-http://localhost:8501
-```
-
-### Carte
-
-La version Streamlit utilise **Folium/Leaflet avec OpenStreetMap**. On peut :
-
-- zoomer avec la molette ;
-- déplacer la carte ;
-- passer en plein écran ;
-- cliquer sur une ville pour afficher soleil, Tmin et Tmax ;
-- changer de mois et d'indicateur ;
-- filtrer France / étranger ;
-- afficher une carte claire alternative.
-
-## Données soleil Open-Meteo
-
-Dans la sidebar Streamlit, choisir **Open-Meteo 1991–2020** pour recompter les jours à partir de `sunshine_duration` quotidien. Une journée solaire correspond ici à :
-
-```text
-sunshine_duration >= 18 000 secondes = 5 heures
-```
-
-Le résultat est mis en cache par Streamlit pour éviter de refaire les requêtes à chaque interaction.
-
-## Version desktop Tkinter
-
-Elle reste disponible :
+Sinon :
 
 ```powershell
-py -3 carte_climat.py
+git clone https://github.com/matthieuangeli-code/carte-climat.git
+cd carte-climat
+.\lancer_streamlit.bat
 ```
 
-ou double-cliquer sur :
+Le lanceur vérifie les dépendances, les installe si nécessaire, puis ouvre l'application Streamlit dans le navigateur.
 
-```text
-lancer_carte_climat.bat
-```
+## Carte
 
-Tkinter fonctionne avec les données intégrées sans dépendance `pip`.
+- fond OpenStreetMap ;
+- zoom à la molette et déplacement libre ;
+- plein écran ;
+- popups par ville avec les trois indicateurs du mois ;
+- filtre France / pays voisins ;
+- affichage optionnel des noms ;
+- classement dynamique sous la carte.
+
+## Fichiers principaux
+
+- `streamlit_app.py` : application navigateur ;
+- `city_catalog.py` : catalogue dense des villes ;
+- `requirements.txt` : dépendances ;
+- `lancer_streamlit.bat` : lanceur Windows ;
+- `carte_climat.py` / `climate_data.py` : ancienne version desktop Tkinter, conservée dans le dépôt.
