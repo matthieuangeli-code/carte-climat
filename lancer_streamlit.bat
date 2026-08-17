@@ -11,10 +11,28 @@ if not errorlevel 1 (
   )
 )
 
+if not exist "data\climate_10y.csv" (
+  echo.
+  echo ================================================
+  echo Premier lancement : preparation des donnees climat
+  echo 2016-2025 avant ouverture du navigateur.
+  echo Cela ne sera fait qu'une seule fois sur ce PC.
+  echo ================================================
+  echo.
+  py -3 -c "import pandas, meteostat" >nul 2>&1
+  if errorlevel 1 (
+    echo Installation des dependances de calcul...
+    py -3 -m pip install --upgrade pandas "meteostat>=2.1.4"
+    if errorlevel 1 goto :error
+  )
+  py -3 precompute_climate.py
+  if errorlevel 1 goto :error_data
+)
+
 echo Verification des dependances Streamlit...
 py -3 -c "import streamlit, folium, streamlit_folium, pandas" >nul 2>&1
 if errorlevel 1 (
-  echo Installation ou mise a jour des dependances de l'application...
+  echo Installation des dependances de l'application...
   py -3 -m pip install streamlit folium streamlit-folium pandas
   if errorlevel 1 goto :error
 )
@@ -22,6 +40,12 @@ if errorlevel 1 (
 echo Lancement de la carte dans le navigateur...
 py -3 -m streamlit run streamlit_app.py
 exit /b 0
+
+:error_data
+echo.
+echo Le pre-calcul des donnees a echoue. Le navigateur n'est pas lance avec un jeu incomplet.
+pause
+exit /b 1
 
 :error
 echo.
