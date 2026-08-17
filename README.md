@@ -1,36 +1,78 @@
 # Carte Climat
 
-Petite application Python/Tkinter pour comparer le climat de villes françaises et voisines.
+Application Python pour comparer le climat de villes françaises et voisines, avec deux interfaces :
+
+- **Streamlit + OpenStreetMap** : version recommandée, dans le navigateur, avec zoom/pan et popups ;
+- **Tkinter** : version desktop légère et hors ligne.
 
 ## Indicateurs
 
 - température minimale moyenne par mois ;
 - température maximale moyenne par mois ;
 - nombre moyen de jours avec **au moins 5 h de soleil effectif** ;
-- classement dynamique et carte interactive.
+- classement dynamique des villes.
 
 La sélection comprend notamment Biot, Embrun, Marseille, Montpellier, Toulouse, Annecy, Chambéry, La Rochelle, Paris, Oslo, Genève, Barcelone, Milan et plusieurs autres villes.
 
-## Lancer sous Windows
+## Version Streamlit — recommandée
 
-1. Installer Python 3 (avec Tkinter, inclus dans l'installation standard de python.org).
-2. Télécharger ou cloner ce dépôt.
-3. Double-cliquer sur `lancer_carte_climat.bat`, ou lancer :
+### Windows : le plus simple
+
+Double-cliquer sur :
+
+```text
+lancer_streamlit.bat
+```
+
+Le script installe les dépendances si nécessaire, démarre Streamlit et ouvre automatiquement l'application dans le navigateur.
+
+### En ligne de commande
+
+```powershell
+py -3 -m pip install -r requirements.txt
+py -3 -m streamlit run streamlit_app.py
+```
+
+Puis ouvrir, si nécessaire :
+
+```text
+http://localhost:8501
+```
+
+### Carte
+
+La version Streamlit utilise **Folium/Leaflet avec OpenStreetMap**. On peut :
+
+- zoomer avec la molette ;
+- déplacer la carte ;
+- passer en plein écran ;
+- cliquer sur une ville pour afficher soleil, Tmin et Tmax ;
+- changer de mois et d'indicateur ;
+- filtrer France / étranger ;
+- afficher une carte claire alternative.
+
+## Données soleil Open-Meteo
+
+Dans la sidebar Streamlit, choisir **Open-Meteo 1991–2020** pour recompter les jours à partir de `sunshine_duration` quotidien. Une journée solaire correspond ici à :
+
+```text
+sunshine_duration >= 18 000 secondes = 5 heures
+```
+
+Le résultat est mis en cache par Streamlit pour éviter de refaire les requêtes à chaque interaction.
+
+## Version desktop Tkinter
+
+Elle reste disponible :
 
 ```powershell
 py -3 carte_climat.py
 ```
 
-Alternative :
+ou double-cliquer sur :
 
-```powershell
-python carte_climat.py
+```text
+lancer_carte_climat.bat
 ```
 
-Aucune dépendance `pip` n'est nécessaire.
-
-## Données
-
-L'application démarre hors ligne avec les données intégrées. Le bouton **Recalculer soleil exact 1991–2020** interroge l'archive Open-Meteo et recompte jour par jour les journées où `sunshine_duration >= 300 minutes`.
-
-Les températures intégrées et les valeurs initiales servent de jeu comparatif ; pour l'indicateur soleil, le recalcul Open-Meteo permet d'obtenir une série homogène sur 1991–2020.
+Tkinter fonctionne avec les données intégrées sans dépendance `pip`.
