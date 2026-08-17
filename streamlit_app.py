@@ -1,21 +1,16 @@
 # -*- coding: utf-8 -*-
 """Carte climat interactive — Streamlit + Folium/OpenStreetMap.
 
-Pour rester compatible avec le quota gratuit Open-Meteo, l'application
-n'essaye pas de télécharger 30 années quotidiennes pour plus de 100 villes.
-Elle construit à la place un échantillon climatologique ERA5-Land réparti
-sur le mois et sur 8 années entre 1992 et 2020.
+Objectif pratique : capturer le climat récent plutôt qu'une normale scientifique.
+Les indicateurs sont calculés sur les 10 dernières années complètes : 2016-2025.
+Source : Meteostat (observations + données dérivées quand disponibles).
 """
 
 from __future__ import annotations
 
 import calendar
-import json
+from datetime import date
 import math
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 import folium
 import pandas as pd
@@ -23,6 +18,7 @@ import streamlit as st
 from branca.colormap import LinearColormap
 from folium.plugins import Fullscreen
 from streamlit_folium import st_folium
+import meteostat as ms
 
 from city_catalog import CITIES, COUNTRY_NAMES
 
@@ -32,6 +28,8 @@ st.set_page_config(
     layout="wide",
 )
 
+START = date(2016, 1, 1)
+END = date(2025, 12, 31)
 MONTHS = [
     "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
     "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
@@ -41,10 +39,6 @@ METRICS = {
     "Température minimale moyenne": "tmin",
     "Température maximale moyenne": "tmax",
 }
-
-SAMPLE_YEARS = [1992, 1996, 2000, 2004, 2008, 2012, 2016, 2020]
-SAMPLE_START_DAYS = [2, 6, 10, 14, 18, 22, 25, 28]
-CATALOG_VERSION = "dense-118-v2"
 
 
 def metric_format(value: float, metric: str) -> str:
@@ -66,147 +60,150 @@ def build_colormap(metric: str, vmin: float, vmax: float, caption: str) -> Linea
     return LinearColormap(colors=colors, vmin=vmin, vmax=vmax, caption=caption)
 
 
-def filter_scope(rows: list[dict], scope: str) -> list[dict]:
+def catalog_for_scope(scope: str) -> list[dict]:
     if scope == "France seulement":
-        return [r for r in rows if r["country"] == "FR"]
+        return [c for c in CITIES if c["country"] == "FR"]
     if scope == "Pays voisins seulement":
-        return [r for r in rows if r["country"] not in {"FR", "NO"}]
-    return rows
+        return [c for c in CITIES if c["country"] not in {"FR", "NO"}]
+    return CITIES
 
 
-def _open_json_with_retry(url: str, attempts: int = 4) -> object:
-    delays = [5, 12, 25, 45]
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "carte-climat-streamlit/2.0"},
-    )
+def _empty_months() -> dict:
+    return {
+        "tmin": [None] * 12,
+        "tmax": [None] * 12,
+        "sun_days_gt5h": [None] * 12,
+    }
 
-    for attempt in range(attempts):
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            retryable = exc.code == 429 or 500 <= exc.code < 600
-            if not retryable or attempt == attempts - 1:
-                raise
-            retry_after = exc.headers.get("Retry-After") if exc.headers else None
-            try:
-                delay = max(delays[attempt], float(retry_after)) if retry_after else delays[attempt]
-            except (TypeError, ValueError):
-                delay = delays[attempt]
-            time.sleep(delay)
-        except (urllib.error.URLError, TimeoutError):
-            if attempt == attempts - 1:
-                raise
-            time.sleep(delays[attempt])
 
-    raise RuntimeError("Téléchargement Open-Meteo impossible.")
+def _aggregate_daily(city: dict, df: pd.DataFrame) -> dict:
+    """Agrège une série quotidienne 2016-2025 en 12 valeurs mensuelles."""
+    result = {
+        "name": city["name"],
+        "country": city["country"],
+        "lat": city["lat"],
+        "lon": city["lon"],
+        **_empty_months(),
+    }
+
+    if df is None or df.empty:
+        return result
+
+    df = df.copy()
+    df.index = pd.to_datetime(df.index)
+    df["year"] = df.index.year
+    df["month"] = df.index.month
+
+    for month in range(1, 13):
+        subset = df[df["month"] == month]
+        idx = month - 1
+
+        if "tmin" in subset.columns and subset["tmin"].notna().any():
+            result["tmin"][idx] = float(subset["tmin"].mean())
+        if "tmax" in subset.columns and subset["tmax"].notna().any():
+            result["tmax"][idx] = float(subset["tmax"].mean())
+
+        # Meteostat exprime tsun en minutes/jour. On estime le nombre de jours
+        # > 300 min pour chaque année, en corrigeant seulement les petits trous
+        # de données lorsque la couverture mensuelle reste suffisante.
+        if "tsun" in subset.columns:
+            yearly_estimates = []
+            for year in range(START.year, END.year + 1):
+                ys = subset[subset["year"] == year]["tsun"].dropna()
+                if len(ys) < 12:
+                    continue
+                days_in_month = calendar.monthrange(year, month)[1]
+                sunny = int((ys > 300).sum())
+                estimate = sunny * days_in_month / len(ys)
+                yearly_estimates.append(min(float(days_in_month), estimate))
+            if yearly_estimates:
+                result["sun_days_gt5h"][idx] = float(sum(yearly_estimates) / len(yearly_estimates))
+
+    return result
 
 
 @st.cache_data(show_spinner=False, persist="disk")
-def fetch_sample_window(
-    month: int,
-    year: int,
-    start_day: int,
-    _catalog_version: str,
-) -> list[dict]:
-    last_day = calendar.monthrange(year, month)[1]
-    start_day = min(start_day, last_day)
-    end_day = min(start_day + 2, last_day)
+def fetch_city_climate(signature: tuple[str, str, float, float]) -> dict:
+    """Récupère 2016-2025 pour une ville à partir des stations Meteostat proches."""
+    name, country, lat, lon = signature
+    city = {"name": name, "country": country, "lat": lat, "lon": lon}
+    point = ms.Point(float(lat), float(lon))
 
-    params = {
-        "latitude": ",".join(str(c["lat"]) for c in CITIES),
-        "longitude": ",".join(str(c["lon"]) for c in CITIES),
-        "start_date": f"{year:04d}-{month:02d}-{start_day:02d}",
-        "end_date": f"{year:04d}-{month:02d}-{end_day:02d}",
-        "daily": "temperature_2m_min,temperature_2m_max,sunshine_duration",
-        "timezone": "auto",
-        "models": "era5_land",
-    }
-    url = "https://archive-api.open-meteo.com/v1/archive?" + urllib.parse.urlencode(params)
-    payload = _open_json_with_retry(url)
-    payloads = payload if isinstance(payload, list) else [payload]
+    # Deux stations proches suffisent pour une carte comparative et limitent
+    # fortement la quantité de données téléchargée. Meteostat met ses fichiers
+    # en cache local, donc les stations partagées entre villes sont réutilisées.
+    stations = ms.stations.nearby(point, radius=100_000, limit=2)
+    if stations is None or len(stations) == 0:
+        return _aggregate_daily(city, pd.DataFrame())
 
-    if len(payloads) != len(CITIES):
-        raise RuntimeError(
-            f"Open-Meteo a renvoyé {len(payloads)} lieux pour {len(CITIES)} demandés."
+    parameters = [ms.Parameter.TMIN, ms.Parameter.TMAX, ms.Parameter.TSUN]
+    providers = [ms.Provider.DAILY, ms.Provider.DAILY_DERIVED]
+    ts = ms.daily(stations, START, END, parameters=parameters, providers=providers)
+
+    try:
+        interpolated = ms.interpolate(
+            ts,
+            point,
+            distance_threshold=100_000,
+            elevation_threshold=1000,
+        )
+        df = interpolated.fetch()
+    except Exception:
+        # Repli simple : Meteostat fusionne les sources disponibles lors du fetch.
+        df = ts.fetch()
+        if "station" in df.columns:
+            numeric_cols = [c for c in ["tmin", "tmax", "tsun"] if c in df.columns]
+            if numeric_cols:
+                df = df.groupby(df.index)[numeric_cols].mean()
+
+    return _aggregate_daily(city, df)
+
+
+def load_climate(catalog: list[dict]) -> tuple[list[dict], list[str]]:
+    progress = st.progress(0, text="Chargement du climat récent 2016–2025…")
+    rows: list[dict] = []
+    failed: list[str] = []
+
+    for i, city in enumerate(catalog, start=1):
+        signature = (
+            city["name"], city["country"], float(city["lat"]), float(city["lon"])
+        )
+        try:
+            rows.append(fetch_city_climate(signature))
+        except Exception:
+            failed.append(city["name"])
+        progress.progress(
+            i / len(catalog),
+            text=f"Climat récent : {i}/{len(catalog)} villes — {city['name']}",
         )
 
-    rows: list[dict] = []
-    for city, item in zip(CITIES, payloads):
-        daily = item.get("daily", {})
-        tmins = [float(v) for v in daily.get("temperature_2m_min", []) if v is not None]
-        tmaxs = [float(v) for v in daily.get("temperature_2m_max", []) if v is not None]
-        sunshine = [float(v) for v in daily.get("sunshine_duration", []) if v is not None]
+    progress.empty()
+    return rows, failed
+
+
+def rows_for_month(normals: list[dict], month_idx: int, metric: str) -> list[dict]:
+    rows = []
+    for city in normals:
+        value = city.get(metric, [None] * 12)[month_idx]
+        if value is None or pd.isna(value):
+            continue
         rows.append(
             {
                 "name": city["name"],
                 "country": city["country"],
                 "lat": city["lat"],
                 "lon": city["lon"],
-                "tmin_sum": sum(tmins),
-                "tmin_n": len(tmins),
-                "tmax_sum": sum(tmaxs),
-                "tmax_n": len(tmaxs),
-                "sunny_n": sum(1 for seconds in sunshine if seconds > 18_000),
-                "sun_n": len(sunshine),
+                "tmin": city["tmin"][month_idx],
+                "tmax": city["tmax"][month_idx],
+                "sun_days_gt5h": city["sun_days_gt5h"][month_idx],
             }
         )
     return rows
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_month_climate(month_idx: int, _catalog_version: str) -> list[dict]:
-    month = month_idx + 1
-    accum = {
-        c["name"]: {
-            "name": c["name"], "country": c["country"],
-            "lat": c["lat"], "lon": c["lon"],
-            "tmin_sum": 0.0, "tmin_n": 0,
-            "tmax_sum": 0.0, "tmax_n": 0,
-            "sunny_n": 0, "sun_n": 0,
-        }
-        for c in CITIES
-    }
-
-    progress = st.progress(0, text=f"Chargement climatologique — {MONTHS[month_idx]}…")
-    total = len(SAMPLE_YEARS)
-
-    for i, (year, start_day) in enumerate(zip(SAMPLE_YEARS, SAMPLE_START_DAYS), start=1):
-        window_rows = fetch_sample_window(month, year, start_day, CATALOG_VERSION)
-        for row in window_rows:
-            a = accum[row["name"]]
-            for key in ("tmin_sum", "tmin_n", "tmax_sum", "tmax_n", "sunny_n", "sun_n"):
-                a[key] += row[key]
-        progress.progress(i / total, text=f"Climat {MONTHS[month_idx]} : échantillon {i}/{total}")
-        if i < total:
-            time.sleep(0.35)
-
-    progress.empty()
-    days_in_month = calendar.monthrange(2019, month)[1]
-    result: list[dict] = []
-
-    for city in CITIES:
-        a = accum[city["name"]]
-        if not a["tmin_n"] or not a["tmax_n"] or not a["sun_n"]:
-            continue
-        result.append(
-            {
-                "name": a["name"],
-                "country": a["country"],
-                "lat": a["lat"],
-                "lon": a["lon"],
-                "tmin": a["tmin_sum"] / a["tmin_n"],
-                "tmax": a["tmax_sum"] / a["tmax_n"],
-                "sun_days_gt5h": (a["sunny_n"] / a["sun_n"]) * days_in_month,
-            }
-        )
-    return result
-
-
 st.sidebar.title("☀️ Carte climat")
 st.sidebar.caption(
-    "Comparaison ERA5-Land. Le calcul léger échantillonne plusieurs années et plusieurs moments du mois pour éviter les quotas de l'API publique."
+    "Climat récent 2016–2025 : assez long pour lisser une année bizarre, assez récent pour représenter la situation actuelle."
 )
 
 month_name = st.sidebar.selectbox("Mois", MONTHS, index=0)
@@ -221,50 +218,47 @@ show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 
 st.sidebar.divider()
 st.sidebar.caption(
-    f"{len(CITIES)} villes. Une fois un mois chargé, changer d'indicateur ou de zone ne refait aucun appel réseau."
+    f"{len(CITIES)} villes au catalogue · source Meteostat · période 2016–2025."
 )
-if st.sidebar.button("Vider le cache climat"):
-    fetch_sample_window.clear()
-    load_month_climate.clear()
+st.sidebar.caption(
+    "Le premier lancement peut prendre un peu de temps. Ensuite les données sont gardées en cache sur le PC."
+)
+if st.sidebar.button("Vider le cache climat et recalculer"):
+    fetch_city_climate.clear()
     st.rerun()
 
-try:
-    all_rows = load_month_climate(month_idx, CATALOG_VERSION)
-except urllib.error.HTTPError as exc:
-    if exc.code == 429:
-        st.error(
-            "Open-Meteo limite encore temporairement les requêtes (HTTP 429). "
-            "Attends une minute puis recharge : les échantillons déjà reçus restent en cache."
-        )
-    else:
-        st.error(f"Erreur Open-Meteo HTTP {exc.code}.")
-    st.exception(exc)
-    st.stop()
-except Exception as exc:
-    st.error("Impossible de charger les données climatiques. Recharge la page dans quelques instants.")
-    st.exception(exc)
-    st.stop()
+catalog = catalog_for_scope(scope)
+normals, failed = load_climate(catalog)
+if failed:
+    st.warning(
+        f"{len(failed)} ville(s) n'ont pas pu être chargées et sont ignorées pour cette session : "
+        + ", ".join(failed[:12])
+        + ("…" if len(failed) > 12 else "")
+    )
 
-rows = filter_scope(all_rows, scope)
+rows = rows_for_month(normals, month_idx, metric)
 if not rows:
-    st.error("Aucune ville disponible dans cette sélection.")
+    st.error("Aucune donnée exploitable pour cet indicateur et ce mois.")
     st.stop()
 
-values = [r[metric] for r in rows]
+values = [float(r[metric]) for r in rows]
 vmin, vmax = min(values), max(values)
 ranked = sorted(rows, key=lambda r: r[metric], reverse=True)
 cmap = build_colormap(metric, vmin, vmax, f"{metric_label} — {month_name}")
 
 st.title("Carte climat — France & pays voisins")
 st.caption(
-    "OpenStreetMap interactif : zoome à la molette, déplace la carte et clique sur une ville pour les trois valeurs du mois."
+    "Période récente 2016–2025 · OpenStreetMap interactif : zoome, déplace la carte et clique sur une ville."
 )
 
 cols = st.columns(4)
 cols[0].metric("🥇 Meilleur", f"{ranked[0]['name']} — {metric_format(ranked[0][metric], metric)}")
 for col, ref_name in zip(cols[1:], ["Biot", "Embrun", "Oslo"]):
-    ref = next((r for r in all_rows if r["name"] == ref_name), None)
-    col.metric(ref_name, metric_format(ref[metric], metric) if ref else "—")
+    ref = next((r for r in rows if r["name"] == ref_name), None)
+    if ref is not None:
+        col.metric(ref_name, metric_format(float(ref[metric]), metric))
+    else:
+        col.metric(ref_name, "—")
 
 if scope == "Pays voisins seulement":
     map_center, zoom = [46.4, 5.0], 5
@@ -283,15 +277,21 @@ folium.TileLayer("CartoDB positron", name="Carte claire", show=False).add_to(m)
 Fullscreen(position="topright", title="Plein écran", title_cancel="Quitter le plein écran").add_to(m)
 
 for r in rows:
-    value = r[metric]
+    value = float(r[metric])
     country = COUNTRY_NAMES.get(r["country"], r["country"])
+    tmin_txt = "—" if r["tmin"] is None or pd.isna(r["tmin"]) else f"{r['tmin']:.1f} °C"
+    tmax_txt = "—" if r["tmax"] is None or pd.isna(r["tmax"]) else f"{r['tmax']:.1f} °C"
+    sun_txt = (
+        "—" if r["sun_days_gt5h"] is None or pd.isna(r["sun_days_gt5h"])
+        else f"{r['sun_days_gt5h']:.1f}"
+    )
     popup_html = f"""
     <div style='font-family:Arial,sans-serif; min-width:230px'>
       <h4 style='margin:0 0 8px'>{r['name']} <span style='font-weight:normal'>({country})</span></h4>
-      <b>{month_name}</b><br>
-      ☀️ Jours &gt;5 h : <b>{r['sun_days_gt5h']:.1f}</b><br>
-      🌡️ Tmin moyenne : <b>{r['tmin']:.1f} °C</b><br>
-      🌡️ Tmax moyenne : <b>{r['tmax']:.1f} °C</b><br>
+      <b>{month_name} · moyenne 2016–2025</b><br>
+      ☀️ Jours &gt;5 h : <b>{sun_txt}</b><br>
+      🌡️ Tmin moyenne : <b>{tmin_txt}</b><br>
+      🌡️ Tmax moyenne : <b>{tmax_txt}</b><br>
     </div>
     """
     folium.CircleMarker(
@@ -338,9 +338,9 @@ rank_df = pd.DataFrame(
             "#": i,
             "Ville": r["name"],
             "Pays": COUNTRY_NAMES.get(r["country"], r["country"]),
-            "Jours >5 h soleil": round(r["sun_days_gt5h"], 1),
-            "Tmin moyenne (°C)": round(r["tmin"], 1),
-            "Tmax moyenne (°C)": round(r["tmax"], 1),
+            "Jours >5 h soleil": None if r["sun_days_gt5h"] is None else round(r["sun_days_gt5h"], 1),
+            "Tmin moyenne (°C)": None if r["tmin"] is None else round(r["tmin"], 1),
+            "Tmax moyenne (°C)": None if r["tmax"] is None else round(r["tmax"], 1),
         }
         for i, r in enumerate(ranked, start=1)
     ]
@@ -353,8 +353,7 @@ st.dataframe(
 )
 
 st.caption(
-    "Méthode légère : ERA5-Land via Open-Meteo, 24 jours échantillonnés par mois et par ville, "
-    "répartis sur 8 années entre 1992 et 2020. Tmin/Tmax sont les moyennes de cet échantillon ; "
-    "les jours >5 h sont la fréquence observée ramenée au nombre de jours du mois. "
-    "Ce mode privilégie la comparaison géographique et évite le quota 429 de l'API gratuite."
+    "Période 2016–2025. Tmin/Tmax = moyenne des minima/maxima quotidiens. "
+    "Jours >5 h = nombre moyen de jours par mois où Meteostat indique plus de 300 minutes de soleil. "
+    "L'objectif est une comparaison récente et pratique, pas une normale climatologique officielle."
 )
