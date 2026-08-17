@@ -6,6 +6,15 @@ where git >nul 2>&1
 if not errorlevel 1 (
   git rev-parse --is-inside-work-tree >nul 2>&1
   if not errorlevel 1 (
+    rem Les anciennes versions generaients ces fichiers localement avant qu'ils
+    rem soient versionnes dans GitHub. S'ils sont encore non suivis, ils bloquent
+    rem git pull. On ne supprime que ces deux fichiers generes et uniquement
+    rem lorsqu'ils ne sont pas deja suivis par Git.
+    git ls-files --error-unmatch "data/climate_10y.csv" >nul 2>&1
+    if errorlevel 1 if exist "data\climate_10y.csv" del /q "data\climate_10y.csv"
+    git ls-files --error-unmatch "data/climate_metadata.json" >nul 2>&1
+    if errorlevel 1 if exist "data\climate_metadata.json" del /q "data\climate_metadata.json"
+
     git pull --ff-only
     if errorlevel 1 echo Mise a jour Git ignoree - fichiers locaux conserves.
   )
