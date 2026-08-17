@@ -1,0 +1,20 @@
+@echo off
+cd /d "%~dp0"
+
+echo Verification des dependances Streamlit...
+py -3 -c "import streamlit, folium, streamlit_folium, pandas" >nul 2>&1
+if errorlevel 1 (
+  echo Installation des dependances...
+  py -3 -m pip install -r requirements.txt
+  if errorlevel 1 goto :error
+)
+
+echo Lancement de la carte dans le navigateur...
+py -3 -m streamlit run streamlit_app.py
+exit /b 0
+
+:error
+echo.
+echo Erreur pendant l'installation. Verifie que Python 3 est installe et accessible avec la commande py.
+pause
+exit /b 1
