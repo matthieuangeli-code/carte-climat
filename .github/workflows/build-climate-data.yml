@@ -1,0 +1,47 @@
+name: Build climate data
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "precompute_climate.py"
+      - "city_catalog.py"
+      - ".github/workflows/build-climate-data.yml"
+  schedule:
+    - cron: "20 4 10 1 *"
+
+permissions:
+  contents: write
+
+jobs:
+  build-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install data dependencies
+        run: python -m pip install --upgrade pandas "meteostat>=2.1.4"
+
+      - name: Precompute 10-year climate data
+        run: python precompute_climate.py
+
+      - name: Commit generated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/climate_10y.csv data/climate_metadata.json
+          if git diff --cached --quiet; then
+            echo "No climate-data changes"
+          else
+            git commit -m "Update precomputed climate data"
+            git push
+          fi
