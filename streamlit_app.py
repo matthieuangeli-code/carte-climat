@@ -18,8 +18,9 @@ from city_catalog_generated import COUNTRY_NAMES
 
 st.set_page_config(page_title="Carte climat — Europe", page_icon="☀️", layout="wide")
 
-DATA_PATH = Path("data/climate_10y.csv")
-META_PATH = Path("data/climate_metadata.json")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "data" / "climate_10y.csv"
+META_PATH = BASE_DIR / "data" / "climate_metadata.json"
 MONTHS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
 METRICS = {
     "Jours avec > 5 h de soleil": "sun_days_gt5h",
@@ -98,6 +99,15 @@ def build_colormap(metric: str, vmin: float, vmax: float, caption: str) -> Linea
 def load_data() -> tuple[pd.DataFrame, dict]:
     df = pd.read_csv(DATA_PATH)
     meta = json.loads(META_PATH.read_text(encoding="utf-8")) if META_PATH.exists() else {}
+    required = {"name", "country", "lat", "lon", "month", "tmin", "tmax", "sun_days_gt5h"}
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise ValueError(f"Colonnes absentes du CSV : {', '.join(missing)}")
+    if df.empty:
+        raise ValueError("Le CSV ne contient aucune observation.")
+    df["month"] = pd.to_numeric(df["month"], errors="coerce")
+    if not df["month"].dropna().between(1, 12).all():
+        raise ValueError("La colonne month doit contenir uniquement des valeurs de 1 à 12.")
     return add_climate_score(df), meta
 
 
@@ -109,30 +119,41 @@ if not DATA_PATH.exists():
     st.code("python precompute_climate.py")
     st.stop()
 
-climate, meta = load_data()
+try:
+    climate, meta = load_data()
+except (OSError, ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+    st.error("Les données climatiques sont présentes mais ne peuvent pas être chargées.")
+    st.exception(exc)
+    st.stop()
+
 start_year = meta.get("start_year", "?")
 end_year = meta.get("end_year", "?")
+available_countries = set(climate["country"].dropna().astype(str))
+city_count = int(climate["name"].nunique())
+country_count = len(available_countries)
+
+scope_filters = {"Toutes les villes disponibles": available_countries}
+if "FR" in available_countries:
+    scope_filters["France seulement"] = {"FR"}
+nearby = available_countries.difference({"FR"}, NORDIC_COUNTRIES)
+if nearby:
+    scope_filters["Europe proche hors France"] = nearby
+nordic = available_countries.intersection(NORDIC_COUNTRIES)
+if nordic:
+    scope_filters["Scandinavie disponible"] = nordic
+for code, label in (("NO", "Norvège"), ("SE", "Suède"), ("DK", "Danemark")):
+    if code in available_countries:
+        scope_filters[f"{label} seulement"] = {code}
 
 month_name = st.sidebar.selectbox("Mois", MONTHS, index=0)
 month = MONTHS.index(month_name) + 1
 metric_label = st.sidebar.selectbox("Indicateur", list(METRICS), index=0)
 metric = METRICS[metric_label]
-scope = st.sidebar.selectbox(
-    "Zone",
-    [
-        "France + Europe proche + Nordiques",
-        "France seulement",
-        "Europe proche hors France",
-        "Scandinavie — NO + SE + DK",
-        "Norvège seulement",
-        "Suède seulement",
-        "Danemark seulement",
-    ],
-)
+scope = st.sidebar.selectbox("Zone", list(scope_filters))
 show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 
 st.sidebar.divider()
-st.sidebar.caption(f"Période : {start_year}–{end_year} · source Meteostat · {climate['name'].nunique()} villes pré-calculées.")
+st.sidebar.caption(f"Période : {start_year}–{end_year} · source Meteostat · {city_count} villes pré-calculées.")
 st.sidebar.caption("Changer de mois, d'indicateur ou de zone ne déclenche aucun appel météo.")
 if metric == "climate_score":
     st.sidebar.info(
@@ -141,18 +162,7 @@ if metric == "climate_score":
     )
 
 rows = climate[climate["month"] == month].copy()
-if scope == "France seulement":
-    rows = rows[rows["country"] == "FR"]
-elif scope == "Europe proche hors France":
-    rows = rows[(rows["country"] != "FR") & (~rows["country"].isin(NORDIC_COUNTRIES))]
-elif scope == "Scandinavie — NO + SE + DK":
-    rows = rows[rows["country"].isin(NORDIC_COUNTRIES)]
-elif scope == "Norvège seulement":
-    rows = rows[rows["country"] == "NO"]
-elif scope == "Suède seulement":
-    rows = rows[rows["country"] == "SE"]
-elif scope == "Danemark seulement":
-    rows = rows[rows["country"] == "DK"]
+rows = rows[rows["country"].isin(scope_filters[scope])]
 
 rows = rows[rows[metric].notna()].copy()
 if rows.empty:
@@ -164,17 +174,26 @@ vmin, vmax = float(values.min()), float(values.max())
 ranked = rows.sort_values(metric, ascending=False).copy()
 cmap = build_colormap(metric, vmin, vmax, f"{metric_label} — {month_name}")
 
-st.title("Carte climat — France, Europe proche & pays nordiques")
+st.title("Carte climat interactive")
 st.caption(
-    f"Climat récent {start_year}–{end_year} · réseau dense autour de la France + Norvège/Suède/Danemark · OpenStreetMap interactif."
+    f"Moyennes mensuelles {start_year}–{end_year} · {city_count} villes dans {country_count} pays · carte OpenStreetMap interactive."
 )
 
-cols = st.columns(4)
+catalog_count = int(meta.get("cities_catalog", city_count) or city_count)
+reported_count = int(meta.get("cities_with_data", city_count) or city_count)
+success_ratio = reported_count / catalog_count if catalog_count else 1.0
+if success_ratio < 0.8 or available_countries == {"FR"}:
+    st.warning(
+        f"Jeu de données partiel : {city_count} villes disponibles sur {catalog_count} prévues. "
+        "L'application fonctionne avec les données présentes ; le workflow GitHub doit être relancé pour compléter la couverture européenne."
+    )
+
 best = ranked.iloc[0]
-cols[0].metric("🥇 Meilleur", f"{best['name']} — {metric_format(float(best[metric]), metric)}")
-for col, ref_name in zip(cols[1:], ["Biot", "Embrun", "Oslo"]):
-    ref = rows[rows["name"] == ref_name]
-    col.metric(ref_name, metric_format(float(ref.iloc[0][metric]), metric) if not ref.empty else "—")
+with st.container(horizontal=True):
+    st.metric("Meilleure ville", best["name"], metric_format(float(best[metric]), metric), border=True)
+    st.metric("Villes affichées", len(rows), border=True)
+    st.metric("Pays affichés", rows["country"].nunique(), border=True)
+    st.metric("Période", f"{start_year}–{end_year}", border=True)
 
 # Centre initial puis cadrage automatique sur les points visibles.
 map_center = [float(rows["lat"].mean()), float(rows["lon"].mean())]

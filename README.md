@@ -2,6 +2,19 @@
 
 Application Streamlit interactive pour comparer le climat récent sur une carte OpenStreetMap zoomable.
 
+## Ouvrir l'application depuis n'importe où
+
+Le dépôt est prêt pour Streamlit Community Cloud : le point d'entrée est `streamlit_app.py`, les dépendances sont dans `requirements.txt` et aucune clé secrète n'est nécessaire.
+
+1. Publier les changements sur la branche `main` du dépôt `matthieuangeli-code/carte-climat`.
+2. Ouvrir [share.streamlit.io](https://share.streamlit.io), se connecter avec GitHub, puis choisir **Create app**.
+3. Renseigner le dépôt `matthieuangeli-code/carte-climat`, la branche `main` et le fichier `streamlit_app.py`.
+4. Choisir éventuellement une adresse courte, puis cliquer sur **Deploy**.
+
+L'adresse obtenue en `*.streamlit.app` est publique et fonctionne sur ordinateur comme sur mobile. Les prochains changements poussés sur GitHub seront redéployés automatiquement.
+
+> État des données vérifié le 18 août 2026 : le CSV versionné contient actuellement 3 villes sur 699 prévues. L'app l'indique clairement et reste utilisable. Le workflow GitHub **Build climate data** doit réussir avant de considérer la couverture européenne comme complète.
+
 ## Données et zone couverte
 
 Les données météo sont **pré-calculées** sur les 10 dernières années complètes puis stockées dans `data/climate_10y.csv`. L'application Streamlit ne télécharge donc aucune donnée météo au démarrage.
