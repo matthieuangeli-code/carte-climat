@@ -25,6 +25,12 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "data" / "climate_10y.csv"
 META_PATH = BASE_DIR / "data" / "climate_metadata.json"
 MONTHS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+SEASONS = {
+    "Hiver": [12, 1, 2],
+    "Printemps": [3, 4, 5],
+    "Été": [6, 7, 8],
+    "Automne": [9, 10, 11],
+}
 METRICS = {
     "Jours avec > 5 h de soleil": "sun_days_gt5h",
     "Température minimale moyenne": "tmin",
@@ -37,7 +43,7 @@ COLOR_SCALES = {
     "sun_days_gt5h": {
         "vmin": 0.0,
         "vmax": 31.0,
-        "colors": ["#02040A", "#171A1F", "#3B3000", "#806000", "#D6A900", "#FFE600", "#FFF7A8"],
+        "colors": ["#090521", "#34145F", "#762A83", "#B73779", "#ED5A5A", "#FF9F2D", "#FFE44D"],
     },
     "temperature": {
         "vmin": -20.0,
@@ -110,14 +116,49 @@ def scale_for(metric: str) -> dict:
     return COLOR_SCALES.get(metric, COLOR_SCALES["temperature"])
 
 
-def build_colormap(metric: str, caption: str) -> LinearColormap:
+def build_colormap(metric: str, caption: str, vmin: float, vmax: float) -> LinearColormap:
     scale = scale_for(metric)
     return LinearColormap(
         colors=scale["colors"],
-        vmin=scale["vmin"],
-        vmax=scale["vmax"],
+        vmin=vmin,
+        vmax=vmax,
         caption=caption,
     )
+
+
+def aggregate_period(df: pd.DataFrame, months: list[int]) -> pd.DataFrame:
+    """Agrège les normales mensuelles en saison ou en année par ville."""
+    selected = df[df["month"].isin(months)].copy()
+    group_columns = ["name", "country", "lat", "lon"]
+    return (
+        selected.groupby(group_columns, as_index=False, observed=True)
+        .agg(
+            tmin=("tmin", "mean"),
+            tmax=("tmax", "mean"),
+            sun_days_gt5h=("sun_days_gt5h", lambda values: values.sum(min_count=len(months))),
+            sun_coverage=("sun_coverage", "mean"),
+            sun_score=("sun_score", "mean"),
+            tmin_score=("tmin_score", "mean"),
+            tmax_score=("tmax_score", "mean"),
+            climate_score=("climate_score", "mean"),
+        )
+        .assign(sun_source="period_aggregate")
+    )
+
+
+def display_scale(metric: str, values: pd.Series) -> tuple[float, float, str]:
+    """Échelle solaire robuste et adaptative ; autres métriques fixes."""
+    if metric != "sun_days_gt5h":
+        scale = scale_for(metric)
+        return float(scale["vmin"]), float(scale["vmax"]), "échelle fixe"
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    vmin = float(numeric.quantile(0.05))
+    vmax = float(numeric.quantile(0.95))
+    if vmax <= vmin:
+        vmin, vmax = float(numeric.min()), float(numeric.max())
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+    return vmin, vmax, "contraste adapté à la période"
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
@@ -221,8 +262,22 @@ for code, label in (("NO", "Norvège"), ("SE", "Suède"), ("DK", "Danemark")):
     if code in available_countries:
         scope_filters[f"{label} seulement"] = {code}
 
-month_name = st.sidebar.selectbox("Mois", MONTHS, index=0)
-month = MONTHS.index(month_name) + 1
+period_mode = st.sidebar.segmented_control(
+    "Période",
+    ["Mois", "Saison", "Année"],
+    default="Mois",
+    required=True,
+    width="stretch",
+)
+if period_mode == "Mois":
+    period_label = st.sidebar.selectbox("Mois", MONTHS, index=0)
+    period_months = [MONTHS.index(period_label) + 1]
+elif period_mode == "Saison":
+    period_label = st.sidebar.selectbox("Saison", list(SEASONS), index=0)
+    period_months = SEASONS[period_label]
+else:
+    period_label = "Année entière"
+    period_months = list(range(1, 13))
 metric_label = st.sidebar.selectbox("Indicateur", list(METRICS), index=0)
 metric = METRICS[metric_label]
 scope = st.sidebar.selectbox("Zone", list(scope_filters))
@@ -237,31 +292,36 @@ show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 
 st.sidebar.divider()
 st.sidebar.caption(f"Période : {start_year}–{end_year} · source Meteostat · {city_count} villes pré-calculées.")
-st.sidebar.caption("Changer de mois, d'indicateur ou de zone ne déclenche aucun appel météo.")
-st.sidebar.caption("Les échelles de couleur sont fixes : les mois et les zones restent directement comparables.")
+st.sidebar.caption("Changer de période, d'indicateur ou de zone ne déclenche aucun appel météo.")
+st.sidebar.caption("Températures et indice : échelles fixes. Soleil : contraste adapté à chaque période.")
 if metric == "climate_score":
     st.sidebar.info(
         "Indice global : 50 % soleil, 25 % Tmin, 25 % Tmax. "
         "Le froid est pénalisé, mais la chaleur ne l'est pas : la climatisation est supposée disponible."
     )
 
-rows = climate[climate["month"] == month].copy()
+if len(period_months) == 1:
+    period_rows = climate[climate["month"] == period_months[0]].copy()
+else:
+    period_rows = aggregate_period(climate, period_months)
+
+rows = period_rows.copy()
 rows = rows[rows["country"].isin(scope_filters[scope])]
 
 rows = rows[rows[metric].notna()].copy()
 if rows.empty:
-    st.error("Aucune donnée exploitable pour cet indicateur et ce mois dans cette zone.")
+    st.error("Aucune donnée exploitable pour cet indicateur et cette période dans cette zone.")
     st.stop()
 
 values = rows[metric].astype(float)
-scale = scale_for(metric)
-vmin, vmax = float(scale["vmin"]), float(scale["vmax"])
+vmin, vmax, scale_caption = display_scale(metric, period_rows[metric])
 ranked = rows.sort_values(metric, ascending=False).copy()
-cmap = build_colormap(metric, f"{metric_label} · échelle fixe")
+cmap = build_colormap(metric, f"{metric_label} · {scale_caption}", vmin, vmax)
 
 st.title("Carte climat interactive")
 st.caption(
-    f"Moyennes mensuelles {start_year}–{end_year} · {city_count} villes dans {country_count} pays · carte OpenStreetMap interactive."
+    f"Vue {period_label.lower()} · normales climatiques {start_year}–{end_year} · "
+    f"{city_count} villes dans {country_count} pays · carte OpenStreetMap interactive."
 )
 
 catalog_count = int(meta.get("cities_catalog", city_count) or city_count)
@@ -278,7 +338,7 @@ with st.container(horizontal=True):
     st.metric("Meilleure ville", best["name"], metric_format(float(best[metric]), metric), border=True)
     st.metric("Villes affichées", len(rows), border=True)
     st.metric("Pays affichés", rows["country"].nunique(), border=True)
-    st.metric("Période", f"{start_year}–{end_year}", border=True)
+    st.metric("Vue", period_label, border=True)
 
 # Centre initial puis cadrage automatique sur les points visibles.
 map_center = [float(rows["lat"].mean()), float(rows["lon"].mean())]
@@ -319,7 +379,7 @@ for _, r in rows.iterrows():
     popup_html = f"""
     <div style='font-family:Arial,sans-serif; min-width:245px'>
       <h4 style='margin:0 0 8px'>{r['name']} <span style='font-weight:normal'>({country})</span></h4>
-      <b>{month_name} · moyenne {start_year}–{end_year}</b><br>
+      <b>{period_label} · moyenne {start_year}–{end_year}</b><br>
       ☀️ Jours &gt;5 h : <b>{sun_txt}</b><br>
       🌡️ Tmin moyenne : <b>{tmin_txt}</b><br>
       🌡️ Tmax moyenne : <b>{tmax_txt}</b><br>
@@ -364,10 +424,10 @@ st_folium(
     width=None,
     height=740,
     returned_objects=[],
-    key=f"climate-{month}-{metric}-{scope}-{map_mode}-{show_labels}",
+    key=f"climate-{period_mode}-{period_label}-{metric}-{scope}-{map_mode}-{show_labels}",
 )
 
-st.subheader(f"Classement — {metric_label.lower()} en {month_name.lower()}")
+st.subheader(f"Classement — {metric_label.lower()} · {period_label.lower()}")
 rank_df = pd.DataFrame({
     "#": range(1, len(ranked) + 1),
     "Ville": ranked["name"].values,
@@ -380,7 +440,8 @@ rank_df = pd.DataFrame({
 st.dataframe(rank_df, hide_index=True, width="stretch", height=min(760, 42 + len(rank_df) * 35))
 
 st.caption(
-    "Indice global mensuel : 50 % ensoleillement, 25 % Tmin, 25 % Tmax. "
+    "Indice global : 50 % ensoleillement, 25 % Tmin, 25 % Tmax. Les vues saisonnière et annuelle "
+    "correspondent à la moyenne des indices mensuels. "
     "Soleil = score max à 20 jours/mois avec >5 h ; score thermique maximal dès 8 °C de Tmin et 18 °C de Tmax, "
     "sans pénalité supplémentaire quand il fait plus chaud. "
     "Les rares trous d'ensoleillement Meteostat peuvent être interpolés spatialement lors du pré-calcul."

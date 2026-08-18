@@ -39,6 +39,8 @@ Les 12 mois de l'année sont disponibles avec quatre indicateurs :
 3. **température maximale moyenne** ;
 4. **indice climatique global /100**.
 
+L'application propose trois niveaux temporels : mois, saison et année entière. Pour les vues saisonnières et annuelles, les températures et l'indice climatique sont moyennés sur les mois concernés, tandis que les jours avec plus de 5 h de soleil sont additionnés.
+
 ### Indice climatique global
 
 L'indice est volontairement pratique plutôt que scientifique :
