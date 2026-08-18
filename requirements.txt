@@ -3,5 +3,6 @@ folium
 streamlit-folium
 pandas
 numpy
+global-land-mask==1.0.0
 meteostat>=2.1.4
 geonamescache>=2.0.0
