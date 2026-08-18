@@ -8,10 +8,12 @@ import math
 from pathlib import Path
 
 import folium
+import numpy as np
 import pandas as pd
 import streamlit as st
 from branca.colormap import LinearColormap
 from folium.plugins import Fullscreen
+from folium.raster_layers import ImageOverlay
 from streamlit_folium import st_folium
 
 from city_catalog_generated import COUNTRY_NAMES
@@ -95,6 +97,60 @@ def build_colormap(metric: str, vmin: float, vmax: float, caption: str) -> Linea
     return LinearColormap(colors=colors, vmin=vmin, vmax=vmax, caption=caption)
 
 
+@st.cache_data(show_spinner=False, max_entries=24)
+def build_idw_surface(
+    points: tuple[tuple[float, float, float], ...],
+    vmin: float,
+    vmax: float,
+    metric: str,
+    grid_size: int = 190,
+) -> tuple[np.ndarray, list[list[float]]]:
+    """Construit une surface IDW RGBA, transparente loin des observations."""
+    values = np.asarray(points, dtype=float)
+    lats, lons, observations = values.T
+    lat_pad = max(0.35, (lats.max() - lats.min()) * 0.035)
+    lon_pad = max(0.35, (lons.max() - lons.min()) * 0.035)
+    south, north = float(lats.min() - lat_pad), float(lats.max() + lat_pad)
+    west, east = float(lons.min() - lon_pad), float(lons.max() + lon_pad)
+    grid_lats = np.linspace(south, north, grid_size)
+    grid_lons = np.linspace(west, east, grid_size)
+    surface = np.empty((grid_size, grid_size), dtype=np.float32)
+    nearest = np.empty_like(surface)
+
+    # Calcul ligne par ligne pour garder une consommation mémoire faible avec 699 villes.
+    for row_index, latitude in enumerate(grid_lats):
+        dy = (latitude - lats)[:, None] * 111.2
+        dx = (grid_lons[None, :] - lons[:, None]) * 111.2 * np.cos(np.radians(latitude))
+        distance_sq = dx * dx + dy * dy
+        nearest[row_index] = np.sqrt(distance_sq.min(axis=0))
+        exact = distance_sq < 0.04
+        weights = 1.0 / np.maximum(distance_sq, 4.0)
+        interpolated = (weights * observations[:, None]).sum(axis=0) / weights.sum(axis=0)
+        if exact.any():
+            exact_columns = exact.any(axis=0)
+            interpolated[exact_columns] = observations[exact.argmax(axis=0)[exact_columns]]
+        surface[row_index] = interpolated
+
+    palettes = {
+        "sun_days_gt5h": ["#fff7bc", "#fec44f", "#fe9929", "#d95f0e"],
+        "climate_score": ["#b2182b", "#ef8a62", "#fddbc7", "#d9f0d3", "#1a9850"],
+        "temperature": ["#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"],
+    }
+    colors = palettes.get(metric, palettes["temperature"])
+    rgb_stops = np.asarray(
+        [[int(color[i : i + 2], 16) for i in (1, 3, 5)] for color in colors], dtype=float
+    )
+    normalized = np.clip((surface - vmin) / max(vmax - vmin, 1e-9), 0.0, 1.0)
+    positions = normalized * (len(colors) - 1)
+    lower = np.floor(positions).astype(int)
+    upper = np.minimum(lower + 1, len(colors) - 1)
+    fraction = (positions - lower)[..., None]
+    rgb = rgb_stops[lower] * (1.0 - fraction) + rgb_stops[upper] * fraction
+    alpha = np.where(nearest <= 300.0, 178, 0)[..., None]
+    rgba = np.concatenate([rgb, alpha], axis=2).astype(np.uint8)
+    return rgba, [[south, west], [north, east]]
+
+
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, dict]:
     df = pd.read_csv(DATA_PATH)
@@ -150,6 +206,13 @@ month = MONTHS.index(month_name) + 1
 metric_label = st.sidebar.selectbox("Indicateur", list(METRICS), index=0)
 metric = METRICS[metric_label]
 scope = st.sidebar.selectbox("Zone", list(scope_filters))
+map_mode = st.sidebar.segmented_control(
+    "Affichage",
+    ["Points", "Surface continue"],
+    default="Points",
+    required=True,
+    width="stretch",
+)
 show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 
 st.sidebar.divider()
@@ -202,6 +265,22 @@ folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=True).add_to(m)
 folium.TileLayer("CartoDB positron", name="Carte claire", show=False).add_to(m)
 Fullscreen(position="topright", title="Plein écran", title_cancel="Quitter le plein écran").add_to(m)
 
+if map_mode == "Surface continue":
+    surface_points = tuple(
+        (float(r.lat), float(r.lon), float(getattr(r, metric))) for r in rows.itertuples()
+    )
+    with st.spinner("Interpolation de la surface climatique…", show_time=True):
+        surface, surface_bounds = build_idw_surface(surface_points, vmin, vmax, metric)
+    ImageOverlay(
+        image=surface,
+        bounds=surface_bounds,
+        origin="lower",
+        name="Surface climatique interpolée",
+        opacity=0.78,
+        pixelated=False,
+        zindex=2,
+    ).add_to(m)
+
 for _, r in rows.iterrows():
     value = float(r[metric])
     country = COUNTRY_NAMES.get(r["country"], r["country"])
@@ -224,12 +303,19 @@ for _, r in rows.iterrows():
       🌤️ Indice climatique : <b>{score_txt}</b>{sun_note}
     </div>
     """
+    point_style = (
+        {"radius": radius_for(value, vmin, vmax), "color": "#263238", "weight": 0.55,
+         "fill_color": cmap(value), "fill_opacity": 0.82, "opacity": 1.0}
+        if map_mode == "Points"
+        else {"radius": 5.0, "color": "#000000", "weight": 0, "fill_color": "#000000",
+              "fill_opacity": 0.0, "opacity": 0.0}
+    )
     folium.CircleMarker(
         location=[float(r["lat"]), float(r["lon"])],
-        radius=radius_for(value, vmin, vmax),
-        color="#263238", weight=0.55, fill=True, fill_color=cmap(value), fill_opacity=0.82,
+        fill=True,
         tooltip=f"{r['name']} — {metric_format(value, metric)}",
         popup=folium.Popup(popup_html, max_width=330),
+        **point_style,
     ).add_to(m)
     if show_labels:
         folium.Marker(
@@ -250,7 +336,13 @@ if len(rows) > 1:
 
 cmap.add_to(m)
 folium.LayerControl(collapsed=True).add_to(m)
-st_folium(m, width=None, height=740, returned_objects=[], key=f"climate-{month}-{metric}-{scope}-{show_labels}")
+st_folium(
+    m,
+    width=None,
+    height=740,
+    returned_objects=[],
+    key=f"climate-{month}-{metric}-{scope}-{map_mode}-{show_labels}",
+)
 
 st.subheader(f"Classement — {metric_label.lower()} en {month_name.lower()}")
 rank_df = pd.DataFrame({
@@ -269,3 +361,8 @@ st.caption(
     "Soleil = score max à 20 jours/mois avec >5 h ; Tmin idéale 8–18 °C ; Tmax idéale 18–27 °C. "
     "Les rares trous d'ensoleillement Meteostat peuvent être interpolés spatialement lors du pré-calcul."
 )
+if map_mode == "Surface continue":
+    st.caption(
+        "Surface continue : interpolation IDW (pondération inverse de la distance), masquée à plus de 300 km "
+        "de la ville disponible la plus proche. Cette visualisation est indicative et ne remplace pas un modèle climatique local."
+    )
