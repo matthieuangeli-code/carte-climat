@@ -33,7 +33,7 @@ if not exist "data\climate_10y.csv" (
     py -3 -m pip install --upgrade pandas "meteostat>=2.1.4" "geonamescache>=2.0.0"
     if errorlevel 1 goto :error
   )
-  py -3 precompute_climate.py
+  py -3 precompute_climate_safe.py
   if errorlevel 1 goto :error_data
 )
 
