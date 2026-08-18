@@ -37,12 +37,12 @@ COLOR_SCALES = {
     "sun_days_gt5h": {
         "vmin": 0.0,
         "vmax": 31.0,
-        "colors": ["#050505", "#302900", "#6b5700", "#ad8700", "#e6b800", "#fff200"],
+        "colors": ["#02040A", "#171A1F", "#3B3000", "#806000", "#D6A900", "#FFE600", "#FFF7A8"],
     },
     "temperature": {
         "vmin": -20.0,
         "vmax": 40.0,
-        "colors": ["#08306b", "#2171b5", "#6baed6", "#f7fbff", "#fdae61", "#f46d43", "#a50026"],
+        "colors": ["#061539", "#123B8D", "#0077D9", "#00C8FF", "#B9F5FF", "#FFE08A", "#FF8A00", "#FF304F", "#8F002E"],
     },
     "climate_score": {
         "vmin": 0.0,
@@ -76,17 +76,16 @@ def radius_for(value: float, vmin: float, vmax: float) -> float:
     return 3.8 + 6.2 * math.sqrt(t)
 
 
-def comfort_score(value: float, zero_low: float, ideal_low: float, ideal_high: float, zero_high: float) -> float:
+def warmth_score(value: float, zero_low: float, ideal_low: float) -> float:
+    """Score croissant avec la chaleur, sans pénalité au-dessus du seuil confortable."""
     if pd.isna(value):
         return float("nan")
     x = float(value)
-    if x <= zero_low or x >= zero_high:
+    if x <= zero_low:
         return 0.0
-    if ideal_low <= x <= ideal_high:
+    if x >= ideal_low:
         return 100.0
-    if x < ideal_low:
-        return 100.0 * (x - zero_low) / (ideal_low - zero_low)
-    return 100.0 * (zero_high - x) / (zero_high - ideal_high)
+    return 100.0 * (x - zero_low) / (ideal_low - zero_low)
 
 
 def add_climate_score(df: pd.DataFrame) -> pd.DataFrame:
@@ -97,8 +96,8 @@ def add_climate_score(df: pd.DataFrame) -> pd.DataFrame:
     tmax = pd.to_numeric(out["tmax"], errors="coerce")
 
     sun_score = (sun / 20.0 * 100.0).clip(lower=0.0, upper=100.0)
-    tmin_score = tmin.apply(lambda x: comfort_score(x, -8.0, 8.0, 18.0, 28.0))
-    tmax_score = tmax.apply(lambda x: comfort_score(x, 4.0, 18.0, 27.0, 39.0))
+    tmin_score = tmin.apply(lambda x: warmth_score(x, -8.0, 8.0))
+    tmax_score = tmax.apply(lambda x: warmth_score(x, 4.0, 18.0))
 
     out["sun_score"] = sun_score
     out["tmin_score"] = tmin_score
@@ -243,7 +242,7 @@ st.sidebar.caption("Les échelles de couleur sont fixes : les mois et les zones 
 if metric == "climate_score":
     st.sidebar.info(
         "Indice global : 50 % soleil, 25 % Tmin, 25 % Tmax. "
-        "Le chaud extrême est pénalisé : plus chaud n'est pas automatiquement meilleur."
+        "Le froid est pénalisé, mais la chaleur ne l'est pas : la climatisation est supposée disponible."
     )
 
 rows = climate[climate["month"] == month].copy()
@@ -301,6 +300,7 @@ if map_mode == "Surface continue":
         name="Surface climatique interpolée",
         opacity=0.78,
         pixelated=False,
+        mercator_project=True,
         zindex=2,
     ).add_to(m)
 
@@ -381,7 +381,8 @@ st.dataframe(rank_df, hide_index=True, width="stretch", height=min(760, 42 + len
 
 st.caption(
     "Indice global mensuel : 50 % ensoleillement, 25 % Tmin, 25 % Tmax. "
-    "Soleil = score max à 20 jours/mois avec >5 h ; Tmin idéale 8–18 °C ; Tmax idéale 18–27 °C. "
+    "Soleil = score max à 20 jours/mois avec >5 h ; score thermique maximal dès 8 °C de Tmin et 18 °C de Tmax, "
+    "sans pénalité supplémentaire quand il fait plus chaud. "
     "Les rares trous d'ensoleillement Meteostat peuvent être interpolés spatialement lors du pré-calcul."
 )
 if map_mode == "Surface continue":
