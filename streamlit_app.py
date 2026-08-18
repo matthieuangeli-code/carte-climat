@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from branca.colormap import LinearColormap
+from branca.element import Element
 from folium.plugins import Fullscreen
 from folium.raster_layers import ImageOverlay
 from global_land_mask import globe
@@ -80,6 +81,42 @@ def radius_for(value: float, vmin: float, vmax: float) -> float:
         return 7.0
     t = max(0.0, min(1.0, (value - vmin) / (vmax - vmin)))
     return 3.8 + 6.2 * math.sqrt(t)
+
+
+def install_dynamic_marker_sizing(
+    map_object: folium.Map, marker_specs: list[tuple[str, float]]
+) -> None:
+    """Redimensionne les CircleMarker côté navigateur selon le niveau de zoom."""
+    if not marker_specs:
+        return
+    javascript_markers = ",".join(
+        f"{{marker:{marker_name},base:{base_radius:.3f}}}"
+        for marker_name, base_radius in marker_specs
+    )
+    map_name = map_object.get_name()
+    map_object.get_root().html.add_child(
+        Element(
+            f"""
+            <script>
+            window.addEventListener("load", function () {{
+                const climateMap = {map_name};
+                const climateMarkers = [{javascript_markers}];
+                function resizeClimateMarkers() {{
+                    const zoom = climateMap.getZoom();
+                    const factor = zoom <= 6
+                        ? Math.max(0.28, Math.pow(0.62, 6 - zoom))
+                        : Math.min(1.35, 1 + (zoom - 6) * 0.12);
+                    climateMarkers.forEach(function (item) {{
+                        item.marker.setRadius(item.base * factor);
+                    }});
+                }}
+                climateMap.on("zoomend", resizeClimateMarkers);
+                resizeClimateMarkers();
+            }});
+            </script>
+            """
+        )
+    )
 
 
 def warmth_score(value: float, zero_low: float, ideal_low: float) -> float:
@@ -364,6 +401,7 @@ if map_mode == "Surface continue":
         zindex=2,
     ).add_to(m)
 
+dynamic_marker_specs: list[tuple[str, float]] = []
 for _, r in rows.iterrows():
     value = float(r[metric])
     country = COUNTRY_NAMES.get(r["country"], r["country"])
@@ -393,13 +431,15 @@ for _, r in rows.iterrows():
         else {"radius": 5.0, "color": "#000000", "weight": 0, "fill_color": "#000000",
               "fill_opacity": 0.0, "opacity": 0.0}
     )
-    folium.CircleMarker(
+    marker = folium.CircleMarker(
         location=[float(r["lat"]), float(r["lon"])],
         fill=True,
         tooltip=f"{r['name']} — {metric_format(value, metric)}",
         popup=folium.Popup(popup_html, max_width=330),
         **point_style,
     ).add_to(m)
+    if map_mode == "Points":
+        dynamic_marker_specs.append((marker.get_name(), float(point_style["radius"])))
     if show_labels:
         folium.Marker(
             [float(r["lat"]), float(r["lon"])],
@@ -417,6 +457,7 @@ if len(rows) > 1:
         padding=(24, 24),
     )
 
+install_dynamic_marker_sizing(m, dynamic_marker_specs)
 cmap.add_to(m)
 folium.LayerControl(collapsed=True).add_to(m)
 st_folium(
