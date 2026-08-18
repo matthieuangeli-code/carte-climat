@@ -39,21 +39,15 @@ METRICS = {
     "Indice climatique global": "climate_score",
 }
 
-# Bornes fixes : une valeur conserve la même couleur quel que soit le mois ou la zone.
+# Palettes par indicateur. Les bornes sont recalculées sur les données affichées.
 COLOR_SCALES = {
     "sun_days_gt5h": {
-        "vmin": 0.0,
-        "vmax": 31.0,
         "colors": ["#090521", "#34145F", "#762A83", "#B73779", "#ED5A5A", "#FF9F2D", "#FFE44D"],
     },
     "temperature": {
-        "vmin": -20.0,
-        "vmax": 40.0,
         "colors": ["#061539", "#123B8D", "#0077D9", "#00C8FF", "#B9F5FF", "#FFE08A", "#FF8A00", "#FF304F", "#8F002E"],
     },
     "climate_score": {
-        "vmin": 0.0,
-        "vmax": 100.0,
         "colors": ["#9e0142", "#d73027", "#f46d43", "#fdae61", "#a6d96a", "#1a9850", "#006837"],
     },
 }
@@ -183,11 +177,8 @@ def aggregate_period(df: pd.DataFrame, months: list[int]) -> pd.DataFrame:
     )
 
 
-def display_scale(metric: str, values: pd.Series) -> tuple[float, float, str]:
-    """Échelle solaire robuste et adaptative ; autres métriques fixes."""
-    if metric != "sun_days_gt5h":
-        scale = scale_for(metric)
-        return float(scale["vmin"]), float(scale["vmax"]), "échelle fixe"
+def display_scale(values: pd.Series) -> tuple[float, float, str]:
+    """Échelle robuste recalculée sur les seules valeurs visibles."""
     numeric = pd.to_numeric(values, errors="coerce").dropna()
     vmin = float(numeric.quantile(0.05))
     vmax = float(numeric.quantile(0.95))
@@ -195,7 +186,7 @@ def display_scale(metric: str, values: pd.Series) -> tuple[float, float, str]:
         vmin, vmax = float(numeric.min()), float(numeric.max())
     if vmax <= vmin:
         vmax = vmin + 1.0
-    return vmin, vmax, "contraste adapté à la période"
+    return vmin, vmax, "contraste adapté aux données affichées"
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
@@ -330,7 +321,7 @@ show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 st.sidebar.divider()
 st.sidebar.caption(f"Période : {start_year}–{end_year} · source Meteostat · {city_count} villes pré-calculées.")
 st.sidebar.caption("Changer de période, d'indicateur ou de zone ne déclenche aucun appel météo.")
-st.sidebar.caption("Températures et indice : échelles fixes. Soleil : contraste adapté à chaque période.")
+st.sidebar.caption("Toutes les échelles sont recalculées sur la période et la zone affichées.")
 if metric == "climate_score":
     st.sidebar.info(
         "Indice global : 50 % soleil, 25 % Tmin, 25 % Tmax. "
@@ -351,7 +342,7 @@ if rows.empty:
     st.stop()
 
 values = rows[metric].astype(float)
-vmin, vmax, scale_caption = display_scale(metric, period_rows[metric])
+vmin, vmax, scale_caption = display_scale(rows[metric])
 ranked = rows.sort_values(metric, ascending=False).copy()
 cmap = build_colormap(metric, f"{metric_label} · {scale_caption}", vmin, vmax)
 
