@@ -47,7 +47,7 @@ L'indice est volontairement pratique plutôt que scientifique :
 - **25 %** confort des Tmin ;
 - **25 %** confort des Tmax.
 
-Le soleil atteint son score maximum à 20 jours/mois avec plus de 5 h. La zone de confort des Tmin est 8–18 °C et celle des Tmax 18–27 °C. Les températures très froides comme les chaleurs excessives sont pénalisées : « plus chaud » n'est donc pas automatiquement « mieux ».
+Le soleil atteint son score maximum à 20 jours/mois avec plus de 5 h. Le score thermique atteint son maximum à partir de 8 °C de Tmin et 18 °C de Tmax. Le froid est pénalisé, mais la chaleur ne l'est pas : l'indice suppose que la climatisation est disponible.
 
 Meteostat n'offre pas `tsun` avec la même couverture partout. Les trous résiduels d'ensoleillement peuvent être complétés lors du pré-calcul par interpolation spatiale à partir des villes voisines ; ces valeurs sont signalées dans les popups.
 
