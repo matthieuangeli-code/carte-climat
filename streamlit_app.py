@@ -31,6 +31,25 @@ METRICS = {
     "Indice climatique global": "climate_score",
 }
 
+# Bornes fixes : une valeur conserve la même couleur quel que soit le mois ou la zone.
+COLOR_SCALES = {
+    "sun_days_gt5h": {
+        "vmin": 0.0,
+        "vmax": 31.0,
+        "colors": ["#050505", "#302900", "#6b5700", "#ad8700", "#e6b800", "#fff200"],
+    },
+    "temperature": {
+        "vmin": -20.0,
+        "vmax": 40.0,
+        "colors": ["#08306b", "#2171b5", "#6baed6", "#f7fbff", "#fdae61", "#f46d43", "#a50026"],
+    },
+    "climate_score": {
+        "vmin": 0.0,
+        "vmax": 100.0,
+        "colors": ["#9e0142", "#d73027", "#f46d43", "#fdae61", "#a6d96a", "#1a9850", "#006837"],
+    },
+}
+
 SUN_WEIGHT = 0.50
 TMIN_WEIGHT = 0.25
 TMAX_WEIGHT = 0.25
@@ -87,14 +106,18 @@ def add_climate_score(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_colormap(metric: str, vmin: float, vmax: float, caption: str) -> LinearColormap:
-    if metric == "sun_days_gt5h":
-        colors = ["#fff7bc", "#fec44f", "#fe9929", "#d95f0e"]
-    elif metric == "climate_score":
-        colors = ["#b2182b", "#ef8a62", "#fddbc7", "#d9f0d3", "#1a9850"]
-    else:
-        colors = ["#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"]
-    return LinearColormap(colors=colors, vmin=vmin, vmax=vmax, caption=caption)
+def scale_for(metric: str) -> dict:
+    return COLOR_SCALES.get(metric, COLOR_SCALES["temperature"])
+
+
+def build_colormap(metric: str, caption: str) -> LinearColormap:
+    scale = scale_for(metric)
+    return LinearColormap(
+        colors=scale["colors"],
+        vmin=scale["vmin"],
+        vmax=scale["vmax"],
+        caption=caption,
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
@@ -131,12 +154,7 @@ def build_idw_surface(
             interpolated[exact_columns] = observations[exact.argmax(axis=0)[exact_columns]]
         surface[row_index] = interpolated
 
-    palettes = {
-        "sun_days_gt5h": ["#fff7bc", "#fec44f", "#fe9929", "#d95f0e"],
-        "climate_score": ["#b2182b", "#ef8a62", "#fddbc7", "#d9f0d3", "#1a9850"],
-        "temperature": ["#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"],
-    }
-    colors = palettes.get(metric, palettes["temperature"])
+    colors = scale_for(metric)["colors"]
     rgb_stops = np.asarray(
         [[int(color[i : i + 2], 16) for i in (1, 3, 5)] for color in colors], dtype=float
     )
@@ -218,6 +236,7 @@ show_labels = st.sidebar.checkbox("Afficher les noms sur la carte", value=False)
 st.sidebar.divider()
 st.sidebar.caption(f"Période : {start_year}–{end_year} · source Meteostat · {city_count} villes pré-calculées.")
 st.sidebar.caption("Changer de mois, d'indicateur ou de zone ne déclenche aucun appel météo.")
+st.sidebar.caption("Les échelles de couleur sont fixes : les mois et les zones restent directement comparables.")
 if metric == "climate_score":
     st.sidebar.info(
         "Indice global : 50 % soleil, 25 % Tmin, 25 % Tmax. "
@@ -233,9 +252,10 @@ if rows.empty:
     st.stop()
 
 values = rows[metric].astype(float)
-vmin, vmax = float(values.min()), float(values.max())
+scale = scale_for(metric)
+vmin, vmax = float(scale["vmin"]), float(scale["vmax"])
 ranked = rows.sort_values(metric, ascending=False).copy()
-cmap = build_colormap(metric, vmin, vmax, f"{metric_label} — {month_name}")
+cmap = build_colormap(metric, f"{metric_label} · échelle fixe")
 
 st.title("Carte climat interactive")
 st.caption(
