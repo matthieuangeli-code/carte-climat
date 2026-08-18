@@ -1,6 +1,7 @@
-streamlit
+streamlit==1.61.1
 folium
 streamlit-folium
 pandas
+numpy
 meteostat>=2.1.4
 geonamescache>=2.0.0
