@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - "precompute_climate.py"
+      - "precompute_climate_safe.py"
       - "city_catalog.py"
       - "city_catalog_generated.py"
       - ".github/workflows/build-climate-data.yml"
@@ -32,8 +33,22 @@ jobs:
       - name: Install data dependencies
         run: python -m pip install --upgrade pandas "meteostat>=2.1.4" "geonamescache>=2.0.0"
 
-      - name: Precompute 10-year climate data
-        run: python precompute_climate.py
+      - name: Precompute validated 10-year climate data
+        run: python precompute_climate_safe.py
+
+      - name: Validate generated database
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path('data/climate_metadata.json').read_text(encoding='utf-8'))
+          ratio = float(meta.get('success_ratio', 0))
+          cities = int(meta.get('cities_with_data', 0))
+          total = int(meta.get('cities_catalog', 0))
+          print(f'Validated database: {cities}/{total} cities ({ratio:.1%})')
+          if ratio < 0.80:
+              raise SystemExit('Refusing to publish incomplete climate database')
+          PY
 
       - name: Commit generated data
         run: |
@@ -43,6 +58,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No climate-data changes"
           else
-            git commit -m "Update precomputed climate data"
+            git commit -m "Update validated precomputed climate data"
             git push
           fi
