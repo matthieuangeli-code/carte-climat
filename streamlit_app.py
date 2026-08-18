@@ -14,6 +14,7 @@ import streamlit as st
 from branca.colormap import LinearColormap
 from folium.plugins import Fullscreen
 from folium.raster_layers import ImageOverlay
+from global_land_mask import globe
 from streamlit_folium import st_folium
 
 from city_catalog_generated import COUNTRY_NAMES
@@ -164,7 +165,9 @@ def build_idw_surface(
     upper = np.minimum(lower + 1, len(colors) - 1)
     fraction = (positions - lower)[..., None]
     rgb = rgb_stops[lower] * (1.0 - fraction) + rgb_stops[upper] * fraction
-    alpha = np.where(nearest <= 300.0, 178, 0)[..., None]
+    lon_grid, lat_grid = np.meshgrid(grid_lons, grid_lats)
+    land_mask = globe.is_land(lat_grid, lon_grid)
+    alpha = np.where((nearest <= 300.0) & land_mask, 178, 0)[..., None]
     rgba = np.concatenate([rgb, alpha], axis=2).astype(np.uint8)
     return rgba, [[south, west], [north, east]]
 
@@ -383,6 +386,7 @@ st.caption(
 )
 if map_mode == "Surface continue":
     st.caption(
-        "Surface continue : interpolation IDW (pondération inverse de la distance), masquée à plus de 300 km "
-        "de la ville disponible la plus proche. Cette visualisation est indicative et ne remplace pas un modèle climatique local."
+        "Surface continue : interpolation IDW (pondération inverse de la distance), limitée aux terres émergées "
+        "et masquée à plus de 300 km de la ville disponible la plus proche. Cette visualisation est indicative "
+        "et ne remplace pas un modèle climatique local."
     )
