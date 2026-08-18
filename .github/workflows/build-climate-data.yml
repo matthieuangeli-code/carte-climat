@@ -1,5 +1,6 @@
 name: Build climate data
 
+# Manual retrigger: 2026-08-18
 on:
   workflow_dispatch:
   push:
